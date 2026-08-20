@@ -240,20 +240,22 @@
     flowerRed: '#d9636b', flowerYellow: '#e8c25a', flowerWhite: '#f2ece0', leafGreen: '#5c8a4a',
     woodLight: '#c9b48a', woodMid: '#8a6a48', woodDark: '#5c4030',
     rugRed: '#a84a3e', rugCream: '#d8c49a',
-    smoke: 'rgba(220,220,220,0.5)'
+    smoke: 'rgba(220,220,220,0.5)',
+    bookWallExt: '#7a6a4a', bookRoofExt: '#4a3628', bookSign: '#6b4c8a',
+    bookWall: '#4a3628', bookFloor: '#2e2018'
   };
 
   // ---------- state ----------
   const state = {
     weather: { code: 3, temp: 12, isDay: 1, ok: false },
-    location: 'home',       // home | outside | cafe | work
+    location: 'home',       // home | outside | cafe | work | bookstore
     transitioning: false,
     animFrame: 0,
     speechTimer: 0,
     tick: 0,
   };
 
-  const LOCATIONS = ['home','outside','cafe','work'];
+  const LOCATIONS = ['home','outside','cafe','work','bookstore'];
 
   function mapWeather(code){
     if ([71,73,75,77,85,86].includes(code)) return 'snowy';
@@ -313,6 +315,7 @@
     outside: ['Bit of fresh air.', "Sea's loud today.", 'Nice out, actually.'],
     cafe: ['One flat white, please.', 'Good spot to sit.', "This chair's comfy."],
     work: ['Just tidying a few things up.', 'Nearly done for today.', 'Focus mode.'],
+    bookstore: ["Just browsing, honestly.", "Found something good.", "Quiet in here today.", "Smells like old paper in here."],
     rainy: ["Glad I'm not out in that.", 'Listen to that rain.'],
     snowy: ["It's properly coming down.", 'Might build something small.'],
     foggy: ['Can barely see the front gate.'],
@@ -336,10 +339,10 @@
   function preferredLocations(){
     const w = mapWeather(state.weather.code);
     if (!state.weather.isDay) return ['home'];
-    if (w === 'rainy' || w === 'snowy') return ['home','cafe','home','cafe'];
-    if (w === 'foggy') return ['home','cafe'];
+    if (w === 'rainy' || w === 'snowy') return ['home','cafe','bookstore','home','bookstore'];
+    if (w === 'foggy') return ['home','cafe','bookstore'];
     if (w === 'sunny') return ['outside','cafe','work','outside'];
-    return ['outside','work','cafe','home']; // cloudy
+    return ['outside','work','cafe','bookstore','home']; // cloudy
   }
 
   function maybeRelocate(force){
@@ -487,10 +490,10 @@
     flower(46,108,PAL.flowerWhite); flower(8,104,PAL.flowerRed);
 
     // path with edge line + texture
-    rect(60,75,40,H-75, PAL.path);
-    rect(60,75,1,H-75, PAL.pathDark);
-    rect(99,75,1,H-75, PAL.pathDark);
-    speckle(60,75,40,H-75, PAL.pathLine, 0.02, 3);
+    rect(80,75,16,H-75, PAL.path);
+    rect(80,75,1,H-75, PAL.pathDark);
+    rect(95,75,1,H-75, PAL.pathDark);
+    speckle(80,75,16,H-75, PAL.pathLine, 0.02, 3);
 
     // low fence along the front of the house yard
     for(let i=0;i<5;i++){ rect(6+i*7,71,2,5,'#6f5438'); }
@@ -518,18 +521,29 @@
     rect(9,59,8,2,'#6f5438');
     flower(11,58,PAL.flowerRed); flower(14,58,PAL.flowerYellow);
 
+    // bookstore (between house and path)
+    rect(48,44,28,31, PAL.bookWallExt);
+    rect(48,44,3,31, PAL.bookRoofExt);
+    twoToneRoof(48,44,28, PAL.bookRoofExt, '#5c4838');
+    rect(57,60,10,15, PAL.doorBrown);
+    rect(61,60,1,15,'#2a1810');
+    rect(51,50,8,8, isDay ? PAL.window : PAL.lampGlow);
+    ctx.strokeStyle='#2a2320'; ctx.lineWidth=1; ctx.strokeRect(51,50,8,8);
+    rect(50,40,24,5, PAL.bookSign);
+    rect(50,40,24,1,'#8a6ba8');
+
     // cafe (middle-right)
-    rect(96,44,32,31, PAL.cafeWall);
-    rect(96,44,3,31, PAL.cafeWallShade);
-    twoToneRoof(96,44,32, PAL.cafeRoof, '#57352b');
-    rect(106,60,14,15, PAL.doorBrown);
-    rect(110,60,1,15,'#2a1810');
-    rect(99,50,6,6, isDay ? PAL.window : PAL.lampGlow);
-    ctx.strokeRect(99,50,6,6);
-    rect(121,50,6,6, isDay ? PAL.window : PAL.lampGlow);
-    ctx.strokeRect(121,50,6,6);
-    rect(100,40,24,5, PAL.cafeSign);
-    rect(100,40,24,1,'#f0cf6a');
+    rect(102,44,30,31, PAL.cafeWall);
+    rect(102,44,3,31, PAL.cafeWallShade);
+    twoToneRoof(102,44,30, PAL.cafeRoof, '#57352b');
+    rect(110,60,14,15, PAL.doorBrown);
+    rect(114,60,1,15,'#2a1810');
+    rect(105,50,6,6, isDay ? PAL.window : PAL.lampGlow);
+    ctx.strokeRect(105,50,6,6);
+    rect(125,50,6,6, isDay ? PAL.window : PAL.lampGlow);
+    ctx.strokeRect(125,50,6,6);
+    rect(106,40,24,5, PAL.cafeSign);
+    rect(106,40,24,1,'#f0cf6a');
     // little outdoor table + umbrella
     rect(84,84,10,2,'#5c3a26');
     rect(88,66,1,18,'#8a5a44');
@@ -537,28 +551,27 @@
     ctx.beginPath(); ctx.moveTo(80,66); ctx.lineTo(88,58); ctx.lineTo(96,66); ctx.closePath(); ctx.fill();
 
     // work (far right)
-    rect(136,40,20,35, PAL.workWall);
-    rect(136,40,3,35, PAL.workWallShade);
-    rect(136,40,20,3, PAL.workRoof);
-    rect(141,62,10,13, PAL.doorBrown);
-    rect(145,62,1,13,'#1c2226');
-    rect(139,46,5,5, isDay ? PAL.window : PAL.lampGlow);
-    ctx.strokeRect(139,46,5,5);
-    rect(148,46,5,5, isDay ? PAL.window : PAL.lampGlow);
-    ctx.strokeRect(148,46,5,5);
-    rect(140,74,18,3,'#20262b'); // sign strip
+    rect(138,40,20,35, PAL.workWall);
+    rect(138,40,3,35, PAL.workWallShade);
+    rect(138,40,20,3, PAL.workRoof);
+    rect(143,62,10,13, PAL.doorBrown);
+    rect(147,62,1,13,'#1c2226');
+    rect(141,46,5,5, isDay ? PAL.window : PAL.lampGlow);
+    ctx.strokeRect(141,46,5,5);
+    rect(150,46,5,5, isDay ? PAL.window : PAL.lampGlow);
+    ctx.strokeRect(150,46,5,5);
+    rect(142,74,18,3,'#20262b'); // sign strip
 
     // trees, varied sizes for depth
-    drawTree(50,64,1);
-    drawTree(63,70,0.6);
-    drawTree(155,72,0.8);
+    drawTree(43,69,0.5);
+    drawTree(135,71,0.5);
 
     if (!isDay){
       rect(0,0,W,H,'rgba(10,15,25,0.35)');
       // streetlamp glow
-      rect(83,60,2,15,'#2a2320');
-      ctx.fillStyle='rgba(244,162,89,0.35)'; ctx.beginPath(); ctx.arc(84,58,7,0,Math.PI*2); ctx.fill();
-      rect(82,55,4,4, PAL.lampGlow);
+      rect(87,60,2,15,'#2a2320');
+      ctx.fillStyle='rgba(244,162,89,0.35)'; ctx.beginPath(); ctx.arc(88,58,7,0,Math.PI*2); ctx.fill();
+      rect(86,55,4,4, PAL.lampGlow);
     }
 
     if (w==='rainy') drawRain(t);
@@ -722,6 +735,86 @@
     ctx.fillStyle=PAL.groundLight; ctx.beginPath(); ctx.arc(121,73,2.5,0,Math.PI*2); ctx.fill();
   }
 
+  function bookPile(x,y,heights,colors){
+    let cy = y;
+    for(let i=0;i<heights.length;i++){
+      rect(x, cy-heights[i], 10, heights[i], colors[i%colors.length]);
+      rect(x, cy-heights[i], 10, 1, 'rgba(255,255,255,0.15)');
+      cy -= heights[i];
+    }
+  }
+
+  function bookshelfWall(x,y,w,h,rows,colorSets){
+    rect(x,y,w,h, PAL.woodDark);
+    const rowH = h/rows;
+    for(let row=0; row<rows; row++){
+      const ry = y + row*rowH + 2;
+      rect(x+2, ry, w-4, rowH-3, '#1a120c'); // shelf recess
+      const colors = colorSets[row%colorSets.length];
+      const spineW = 2, gap = 1;
+      const n = Math.floor((w-4)/(spineW+gap));
+      for(let i=0;i<n;i++){
+        rect(x+3+i*(spineW+gap), ry+1, spineW, rowH-5, colors[i%colors.length]);
+      }
+      rect(x, y+row*rowH, w, 1, '#3a2a1e'); // shelf ledge
+    }
+  }
+
+  function drawBookstore(t,w,isDay){
+    rect(0,0,W,H, PAL.bookWall);
+    rect(0,H-16,W,16, PAL.bookFloor);
+    speckle(0,H-16,W,16,'#241a12',0.03,7);
+
+    // large window, centered
+    drawWindowWeather(56,10,48,32,w,isDay,t);
+    rect(52,8,4,36,PAL.woodDark); rect(104,8,4,36,PAL.woodDark);
+    rect(52,8,56,4,PAL.woodDark);
+
+    const spineSetsA = [
+      ['#a84a3e','#4a7ba6','#5c8a4a','#e0b13b'],
+      ['#8a5a44','#6b4c8a','#a84a3e','#4a7ba6'],
+    ];
+    const spineSetsB = [
+      ['#5c8a4a','#a84a3e','#e0b13b','#6b4c8a'],
+      ['#4a7ba6','#8a5a44','#5c8a4a','#a84a3e'],
+    ];
+    // floor-to-ceiling bookshelves flanking the window
+    bookshelfWall(4,8,20,64,5,spineSetsA);
+    bookshelfWall(136,8,20,64,5,spineSetsB);
+
+    // small reading lamp above the table
+    rect(98,74,2,10,'#3a2a1e');
+    ctx.fillStyle = isDay ? 'rgba(244,162,89,0.15)' : PAL.lampGlow;
+    ctx.beginPath(); ctx.arc(99,72,5,0,Math.PI*2); ctx.fill();
+
+    // central table piled high with books
+    rect(58,88,44,8, PAL.woodMid);
+    rect(58,88,44,2, PAL.woodLight);
+    rect(60,84,4,16, PAL.woodDark); rect(98,84,4,16, PAL.woodDark);
+    bookPile(62, 88, [3,3,4], ['#a84a3e','#4a7ba6','#5c8a4a']);
+    bookPile(78, 88, [4,3], ['#e0b13b','#8a5a44']);
+    bookPile(90, 88, [3,3,3], ['#6b4c8a','#a84a3e','#4a7ba6']);
+    // an open book lying flat
+    rect(68,84,10,3, PAL.woodLight);
+    rect(70,85,2,1,'#2a2018'); rect(74,85,2,1,'#2a2018');
+
+    // small reading chair, tucked in the open corner
+    rect(28,86,14,4,'#3a4750');
+    rect(28,68,3,18,'#2a3238');
+    rect(28,64,14,8,'#8a5a44');
+    rect(28,64,14,2,'#a06a52');
+
+    // potted plant by the shelves
+    rect(126,80,8,14,'#5c3a26');
+    ctx.fillStyle=PAL.groundShade; ctx.beginPath(); ctx.arc(130,77,6,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#5c7a4f'; ctx.beginPath(); ctx.arc(129,75,6,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle=PAL.groundLight; ctx.beginPath(); ctx.arc(127,73,2.5,0,Math.PI*2); ctx.fill();
+
+    // small rug under the table
+    rect(48,98,64,10, PAL.rugRed);
+    rect(52,100,56,6, PAL.rugCream);
+  }
+
   function drawDragon(x,y){
     rect(x,y,10,4,PAL.dragonGreen);
     rect(x-3,y+1,4,2,PAL.dragonGreen);
@@ -789,6 +882,9 @@
     } else if (state.location === 'work'){
       drawWork(t,w,isDay);
       drawCharacter(58, 76, 0, true, false);
+    } else if (state.location === 'bookstore'){
+      drawBookstore(t,w,isDay);
+      drawCharacter(78, 76, Math.floor(t/4)%2, false, false);
     } else {
       drawOutside(t,w,isDay);
       drawCharacter(80 + Math.sin(t/10)*4, 78, Math.floor(t/3)%2, false, false);
@@ -821,6 +917,8 @@
       lines: ["Trying to get through it, honestly.", "Nearly done for today, I think.", "Work's work. Nothing exciting to report."] },
     { keys: ['coffee','cafe','tea','flat white'],
       lines: ["Fancy a coffee run?", "This place does a decent flat white, not gonna lie.", "I could go for a cuppa, actually."] },
+    { keys: ['book','books','bookstore','bookshop','reading','read '],
+      lines: ["Picked up something new the other day.", "Could happily lose an afternoon in there.", "Bit of a pile building up on my table, if I'm honest."] },
     { keys: ['thanks','thank you','cheers','ta'],
       lines: ["No bother.", "Anytime.", "Course."] },
     { keys: ['bye','see you','later','night','goodnight'],

@@ -1,10 +1,10 @@
 # Pixel Companion — Project Notes
 
-A small pixel-art desktop companion that lives in four scenes (home, cafe,
-work, outside), reacts to real weather in Whitley Bay, UK, and can hold a
-real conversation via a local Claude Code bridge. Originally built as a
-Claude.ai artifact; moved to Claude Code so it can keep growing and run as a
-real local app.
+A small pixel-art desktop companion that lives in five scenes (home, cafe,
+work, bookstore, outside), reacts to real weather in Whitley Bay, UK, and can
+hold a real conversation via a local Claude Code bridge. Originally built as
+a Claude.ai artifact; moved to Claude Code so it can keep growing and run as
+a real local app. Public repo: https://github.com/davidclose/pixel-companion
 
 ## Running it
 
@@ -40,13 +40,21 @@ Two files, no build step, no npm install:
 - A single `state` object holds current weather, location, transition flag,
   and a tick counter. Redrawn every ~180ms via `setInterval` — no diffing,
   the whole canvas just repaints each tick.
-- Four scene functions (`drawHome`, `drawCafe`, `drawWork`, `drawOutside`)
-  each take `(tick, weatherState, isDay)` and draw their background, then
-  `drawCharacter(x, y, frame, seated, facingLeft)` draws him on top.
+- Five scene functions (`drawHome`, `drawCafe`, `drawWork`, `drawBookstore`,
+  `drawOutside`) each take `(tick, weatherState, isDay)` and draw their
+  background, then `drawCharacter(x, y, frame, seated, facingLeft)` draws
+  him on top. Adding a location means: a `draw*` function, an entry in
+  `LOCATIONS`, a case in `render()`'s if/else chain for placement, an entry
+  in `SPEECH`, and a weight in `preferredLocations()`.
+- The outside scene now shows four buildings side-by-side (house, bookstore,
+  cafe, work) sharing one narrow path — the layout is hand-tuned pixel
+  coordinates with no margin to spare, so adding a fifth exterior building
+  would need re-spacing the whole row rather than just appending one.
 - A weighted rule table (`preferredLocations()`) picks where he'd rather be
-  based on weather + time of day; a 45s timer rerolls it if idle, or the
-  "Nudge him" button forces a reroll. Moving between locations always plays
-  a walk-across-outside animation, regardless of actual origin/destination
+  based on weather + time of day (bookstore weighted into rainy/foggy/cloudy
+  as a cosy indoor option); a 45s timer rerolls it if idle, or the "Nudge
+  him" button forces a reroll. Moving between locations always plays a
+  walk-across-outside animation, regardless of actual origin/destination
   (kept simple on purpose).
 - Weather comes from `https://api.open-meteo.com/v1/forecast` for Whitley
   Bay (55.0393, -1.4472), refreshed every 30 minutes, mapped from WMO codes
