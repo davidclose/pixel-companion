@@ -1056,7 +1056,11 @@
   async function bridgeReply(text){
     const w = mapWeather(state.weather.code);
     const controller = new AbortController();
-    const timer = setTimeout(()=> controller.abort(), 20000);
+    // must exceed companion-server.js's own timeout (45s for search-triggered
+    // requests) — otherwise the browser gives up before the server does and
+    // silently falls back to offline replies even though the server would
+    // have succeeded given a bit longer.
+    const timer = setTimeout(()=> controller.abort(), 50000);
     try{
       const res = await fetch(BRIDGE_URL, {
         method: 'POST',
