@@ -8,9 +8,20 @@ a real local app. Public repo: https://github.com/davidclose/pixel-companion
 
 ## Running it
 
-Two ways to open it, depending on whether you want real AI chat:
+Three ways, depending on what you want:
 
-**With real AI chat (recommended):**
+**Desktop app (recommended — no terminal, no browser tab):**
+```bash
+cd "/Users/david/Documents/Coding Project/Ryker AI/files"
+npm install   # first time only
+npm start
+```
+Opens a real window plus a menu-bar tray icon (Show/Hide, Always on Top,
+Quit). Real AI chat works the same as the browser mode below, since it's the
+same `companion-server.js` running embedded in the app. Not yet packaged as
+a standalone double-clickable `.app` — see Known gotchas.
+
+**Browser, with real AI chat:**
 ```bash
 cd "/Users/david/Documents/Coding Project/Ryker AI/files"
 node companion-server.js
@@ -42,6 +53,20 @@ Two files, no build step, no npm install:
 - **`companion-server.js`** — an optional local Node server (stdlib only,
   zero dependencies). Does two jobs: serves `pixel-companion.html` itself
   over HTTP, and answers `POST /chat` by shelling out to the Claude Code CLI.
+  Resolves the `claude` binary itself at startup (`resolveClaudeBin()` — `which`,
+  then falls back to known install paths like `~/.local/bin/claude`) rather
+  than trusting `PATH`, since a double-clicked GUI app gets a minimal `PATH`
+  that doesn't include a shell rc file's additions. Exports `{ PORT, server }`
+  so `main.js` can run it in-process instead of as a subprocess.
+- **`main.js`** — Electron main process. Requires `companion-server.js`
+  directly (starts its HTTP server in-process, same code path as the
+  terminal mode) and loads `http://localhost:8934/` into a `BrowserWindow`.
+  Adds a tray icon (`tray-icon.png`, a tiny hand-written PNG — see the Python
+  snippet in git history if it ever needs regenerating) with Show/Hide,
+  Always on Top, and Quit. `app.dock.hide()` on macOS — it's meant to live in
+  the menu bar, not the Dock/app-switcher. Closing the window hides it rather
+  than quitting (`app.isQuiting` flag distinguishes a real quit from the tray
+  menu from an incidental window close).
 
 ### Render loop & behavior
 
@@ -118,17 +143,33 @@ the chat log renders plain escaped text with no markdown support.
   symlink under `~/.local/bin/claude`.
 - Port 8934 is hardcoded. If something else is already using it, the server
   will fail to start with `EADDRINUSE` — find and stop whatever's holding
-  the port, or change `PORT` in `companion-server.js`.
+  the port, or change `PORT` in `companion-server.js`. This also means
+  **don't run the Electron app and `node companion-server.js` at the same
+  time** — the second one to start will fail on the port.
+- The Electron app is `npm start` only right now, not a packaged `.app` —
+  running it means keeping this project folder around and Node/npm
+  installed. Full packaging (`electron-builder` → a real `.app` you could
+  put in `/Applications` and launch without a terminal) is a natural next
+  step, not yet done.
+- First `npm install` needs internet access twice: once for the npm
+  packages, once more for `electron`'s own postinstall step, which
+  downloads the actual Electron.app binary (~150-200MB) from GitHub — this
+  is separate from the npm registry download and can look like it's hanging
+  if you're on a slow connection.
 
 ## Ideas discussed for next steps
 
+- Full `.app` packaging via `electron-builder` (installable, no `npm start`
+  needed) — code-signing/Gatekeeper will need sorting out for that to open
+  without a right-click-Open workaround on a fresh Mac.
+- Launch-at-login (`app.setLoginItemSettings`) so it's just always running.
 - Wider range of animated expressions/moods reacting to conversation tone.
 - Idle animations / small gestures (wave, nod) for extra life.
-- Possible longer-term shape: same trajectory as the bearded dragon buddy
-  project — Electron app with always-on-top + system tray, if that's the
-  direction (worth confirming before committing to it).
 
 ## Files
 
 - `pixel-companion.html` — the app itself.
-- `companion-server.js` — optional local chat bridge + static server.
+- `companion-server.js` — optional local chat bridge + static server (used
+  standalone via terminal, or embedded by `main.js`).
+- `main.js` / `package.json` / `tray-icon.png` — the Electron desktop-app
+  shell (`npm start`).

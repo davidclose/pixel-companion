@@ -1,0 +1,13 @@
+{
+  "name": "pixel-companion",
+  "version": "1.0.0",
+  "description": "A pixel-art desktop companion that reacts to real Whitley Bay weather and chats via a local Claude Code bridge.",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^43.4.1"
+  }
+}

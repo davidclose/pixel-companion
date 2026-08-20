@@ -19,15 +19,36 @@
 // `claude` CLI to be installed and on PATH in the terminal you run this from.
 
 const http = require('http');
-const { execFile } = require('child_process');
+const { execFile, execFileSync } = require('child_process');
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
 
 const PORT = 8934;
-const CLAUDE_BIN = 'claude';
 const STATIC_DIR = __dirname;
 const MIME_TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json' };
+
+// GUI apps launched by double-click (e.g. from a packaged Electron app) get a
+// minimal PATH that usually doesn't include ~/.local/bin or Homebrew's bin —
+// unlike a terminal, which sources your shell's rc file. Resolve `claude`'s
+// real location up front so chat still works when launched that way.
+function resolveClaudeBin(){
+  try {
+    return execFileSync('which', ['claude'], { encoding: 'utf8' }).trim() || 'claude';
+  } catch {
+    const candidates = [
+      path.join(os.homedir(), '.local/bin/claude'),
+      '/opt/homebrew/bin/claude',
+      '/usr/local/bin/claude',
+      path.join(os.homedir(), '.claude/local/claude'),
+    ];
+    for (const c of candidates) {
+      if (fs.existsSync(c)) return c;
+    }
+    return 'claude'; // give up — will surface as a clear "can't find claude" error
+  }
+}
+const CLAUDE_BIN = resolveClaudeBin();
 
 // Run Claude Code from a neutral, empty directory so it doesn't pick up this
 // project's own CLAUDE.md / memory files as context for a chat reply.
@@ -174,3 +195,5 @@ server.listen(PORT, () => {
   console.log('Open that link in your browser (not the .html file directly) — real AI replies use your Claude Code login.');
   console.log('Press Ctrl+C to stop.');
 });
+
+module.exports = { PORT, server };
