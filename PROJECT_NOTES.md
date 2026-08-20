@@ -28,9 +28,17 @@ of real AI.
 Two files, no build step, no npm install:
 
 - **`pixel-companion.html`** — the entire app: HTML/CSS/JS in one file,
-  renders to an offscreen 160×120 canvas scaled up with
-  `image-rendering: pixelated`. All art is drawn procedurally
-  (`ctx.fillRect` / arcs) — no image assets, no sprite sheets.
+  renders to an offscreen canvas scaled up with `image-rendering: pixelated`.
+  All art is drawn procedurally (`ctx.fillRect` / arcs) — no image assets,
+  no sprite sheets. The canvas element is 320×240, but `ctx.scale(2,2)` is
+  applied once at setup, so every `draw*` function still works in the
+  original 160×120 logical coordinate space (`const W = 160, H = 120`) — the
+  extra resolution just gives finer precision underneath for the outline/
+  shading pass. A `PAL.outline` color + `OUTLINE` (0.5 logical units, so a
+  crisp 1 real-pixel line) constant are used throughout for the
+  Stardew-Valley-style dark borders around buildings, furniture, and the
+  character; `paneCross(x,y,w,h)` draws the cross-mullion divider on
+  windows.
 - **`companion-server.js`** — an optional local Node server (stdlib only,
   zero dependencies). Does two jobs: serves `pixel-companion.html` itself
   over HTTP, and answers `POST /chat` by shelling out to the Claude Code CLI.
