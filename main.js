@@ -59,6 +59,14 @@ function buildTrayMenu(){
         if (win) win.setAlwaysOnTop(alwaysOnTop);
       },
     },
+    {
+      label: 'Launch at Login',
+      type: 'checkbox',
+      checked: app.getLoginItemSettings().openAtLogin,
+      click: (item) => {
+        app.setLoginItemSettings({ openAtLogin: item.checked });
+      },
+    },
     { type: 'separator' },
     {
       label: 'Quit',

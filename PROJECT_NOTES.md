@@ -10,16 +10,33 @@ a real local app. Public repo: https://github.com/davidclose/pixel-companion
 
 Three ways, depending on what you want:
 
-**Desktop app (recommended — no terminal, no browser tab):**
+**Packaged desktop app (fully standalone, no terminal ever):**
+```bash
+cd "/Users/david/Documents/Coding Project/Ryker AI/files"
+npm install   # first time only
+npm run dist  # builds dist/Pixel Companion-1.0.0.dmg
+```
+Open the `.dmg` and drag **Pixel Companion** into Applications, same as any
+other Mac app. **First launch needs a right-click → Open** (not a plain
+double-click) — the build is unsigned, so Gatekeeper blocks a normal open
+the first time; after that one-time approval it opens normally forever.
+Rebuild after any code change — the `.app` is a frozen snapshot, it doesn't
+read the source files live.
+
+**Dev-mode desktop app (no terminal after first launch, but rebuilds aren't needed):**
 ```bash
 cd "/Users/david/Documents/Coding Project/Ryker AI/files"
 npm install   # first time only
 npm start
 ```
-Opens a real window plus a menu-bar tray icon (Show/Hide, Always on Top,
-Quit). Real AI chat works the same as the browser mode below, since it's the
-same `companion-server.js` running embedded in the app. Not yet packaged as
-a standalone double-clickable `.app` — see Known gotchas.
+Opens the same window + tray icon, running straight from source instead of
+a packaged `.app` — useful while still changing the code, since there's no
+rebuild step.
+
+Both desktop modes give you a real window plus a menu-bar tray icon
+(Show/Hide, Always on Top, Launch at Login, Quit). Real AI chat works the
+same as the browser mode below, since it's the same `companion-server.js`
+running embedded in the app.
 
 **Browser, with real AI chat:**
 ```bash
@@ -146,25 +163,39 @@ the chat log renders plain escaped text with no markdown support.
   the port, or change `PORT` in `companion-server.js`. This also means
   **don't run the Electron app and `node companion-server.js` at the same
   time** — the second one to start will fail on the port.
-- The Electron app is `npm start` only right now, not a packaged `.app` —
-  running it means keeping this project folder around and Node/npm
-  installed. Full packaging (`electron-builder` → a real `.app` you could
-  put in `/Applications` and launch without a terminal) is a natural next
-  step, not yet done.
+- The packaged `.app` is **unsigned** — no Apple Developer certificate is
+  set up for it (that costs money and is a real ongoing commitment, so it
+  wasn't done without asking). Consequence: Gatekeeper blocks a plain
+  double-click on first launch; right-click → Open bypasses it once, then
+  it's remembered. `npm run dist` itself detected an old signing identity on
+  this Mac ("David Rutter-Close") but it's expired, so the build correctly
+  fell back to unsigned automatically — nothing to configure differently
+  unless a fresh paid cert is set up later.
+- The `.app` is a **snapshot** of the source at build time (bundled into
+  `app.asar` inside it) — editing `pixel-companion.html` etc. afterward has
+  no effect on an already-built `.app`. Re-run `npm run dist` after changes
+  and reinstall from the new `.dmg` to pick them up. `npm start` (dev mode)
+  doesn't have this problem — it always runs the live source.
+- `npm run dist` output goes to `dist/` (gitignored, ~120MB `.dmg` — too
+  large and too disposable to commit). `build/icon.icns` **is** committed —
+  it's a source asset, not a build product.
+- This machine is Intel (`x86_64`), so the build only targets `x64`. If this
+  ever needs to run on an Apple Silicon Mac, add `"arch": ["x64", "arm64"]`
+  (or `"universal"`) under `build.mac` in `package.json` and rebuild.
 - First `npm install` needs internet access twice: once for the npm
   packages, once more for `electron`'s own postinstall step, which
   downloads the actual Electron.app binary (~150-200MB) from GitHub — this
   is separate from the npm registry download and can look like it's hanging
-  if you're on a slow connection.
+  if you're on a slow connection. `npm run dist` needs internet again the
+  first time too, to download `electron-builder`'s DMG-building helper.
 
 ## Ideas discussed for next steps
 
-- Full `.app` packaging via `electron-builder` (installable, no `npm start`
-  needed) — code-signing/Gatekeeper will need sorting out for that to open
-  without a right-click-Open workaround on a fresh Mac.
-- Launch-at-login (`app.setLoginItemSettings`) so it's just always running.
 - Wider range of animated expressions/moods reacting to conversation tone.
 - Idle animations / small gestures (wave, nod) for extra life.
+- A paid Apple Developer ID certificate, if the right-click-Open-once
+  friction on a fresh install ever becomes a real problem (e.g. installing
+  on another Mac) — would remove the Gatekeeper warning entirely.
 
 ## Files
 
@@ -172,4 +203,7 @@ the chat log renders plain escaped text with no markdown support.
 - `companion-server.js` — optional local chat bridge + static server (used
   standalone via terminal, or embedded by `main.js`).
 - `main.js` / `package.json` / `tray-icon.png` — the Electron desktop-app
-  shell (`npm start`).
+  shell (`npm start` for dev mode, `npm run dist` to build the `.app`/`.dmg`).
+- `build/icon.icns` — the app icon (generated from a hand-drawn 64×64
+  pixel-art scene, scaled up — regenerate via Pillow + `sips`/`iconutil` if
+  it ever needs changing; see git history for the generation script).

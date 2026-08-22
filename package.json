@@ -3,11 +3,37 @@
   "version": "1.0.0",
   "description": "A pixel-art desktop companion that reacts to real Whitley Bay weather and chats via a local Claude Code bridge.",
   "main": "main.js",
+  "author": "David",
   "private": true,
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "dist": "electron-builder --mac"
   },
   "devDependencies": {
-    "electron": "^43.4.1"
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.davidclose.pixelcompanion",
+    "productName": "Pixel Companion",
+    "files": [
+      "main.js",
+      "companion-server.js",
+      "pixel-companion.html",
+      "tray-icon.png",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "mac": {
+      "icon": "build/icon.icns",
+      "category": "public.app-category.utilities",
+      "target": [
+        { "target": "dmg" },
+        { "target": "dir" }
+      ]
+    }
   }
 }
