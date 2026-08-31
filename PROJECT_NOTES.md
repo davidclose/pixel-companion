@@ -56,17 +56,31 @@ of real AI.
 Two files, no build step, no npm install:
 
 - **`pixel-companion.html`** — the entire app: HTML/CSS/JS in one file,
-  renders to an offscreen canvas scaled up with `image-rendering: pixelated`.
-  All art is drawn procedurally (`ctx.fillRect` / arcs) — no image assets,
-  no sprite sheets. The canvas element is 320×240, but `ctx.scale(2,2)` is
-  applied once at setup, so every `draw*` function still works in the
-  original 160×120 logical coordinate space (`const W = 160, H = 120`) — the
-  extra resolution just gives finer precision underneath for the outline/
-  shading pass. A `PAL.outline` color + `OUTLINE` (0.5 logical units, so a
-  crisp 1 real-pixel line) constant are used throughout for the
-  Stardew-Valley-style dark borders around buildings, furniture, and the
-  character; `paneCross(x,y,w,h)` draws the cross-mullion divider on
-  windows.
+  renders to a canvas scaled up with `image-rendering: pixelated`. All art is
+  drawn procedurally (`ctx.fillRect` / arcs) — no image assets, no sprite
+  sheets. **Native 320×240 logical space** (`const W = 320, H = 240`) with no
+  scale transform: every draw call uses those coordinates directly, which is
+  what gives the art its detail. (An earlier version drew in 160×120 and used
+  `ctx.scale(2,2)`; the art was rebuilt at true 320×240 instead, so any old
+  coordinates you see referenced elsewhere are roughly half these.)
+
+  The Stardew-Valley-ish look comes from a small set of shared primitives
+  rather than per-object hand-shading:
+  - `shade(hex, amt)` — lighten/darken any colour, so highlights and
+    shadows are derived from one base colour instead of hardcoded.
+  - `bevel(x,y,w,h,base,edge)` — light top/left edge, dark bottom/right.
+  - `block(x,y,w,h,base,edge)` — dark outline + bevel. The workhorse:
+    almost every solid object is a `block`.
+  - `blob(cx,cy,r,base,outline)` — outlined, shaded circle for organic
+    shapes (foliage, heads, clouds, sun).
+  - `paneCross`, `speckle`, `flower`, `smallTree`, `bookPile`,
+    `bookshelfWall` — scene-specific helpers built on the above.
+
+  Practical gotcha when placing furniture: an object's *visual* base must
+  line up with whatever it sits on, or it reads as floating. The seated
+  character sprite's base is `y+36` (seated legs end at `y+36`), so chair
+  seats are positioned to match; lamp stems must reach the table top or the
+  floor. Several passes were spent fixing exactly this.
 - **`companion-server.js`** — an optional local Node server (stdlib only,
   zero dependencies). Does two jobs: serves `pixel-companion.html` itself
   over HTTP, and answers `POST /chat` by shelling out to the Claude Code CLI.
@@ -96,10 +110,12 @@ Two files, no build step, no npm install:
   him on top. Adding a location means: a `draw*` function, an entry in
   `LOCATIONS`, a case in `render()`'s if/else chain for placement, an entry
   in `SPEECH`, and a weight in `preferredLocations()`.
-- The outside scene now shows four buildings side-by-side (house, bookstore,
-  cafe, work) sharing one narrow path — the layout is hand-tuned pixel
-  coordinates with no margin to spare, so adding a fifth exterior building
-  would need re-spacing the whole row rather than just appending one.
+- The outside scene shows four buildings side-by-side (house, bookstore,
+  cafe, work) sharing one path. The spacing is hand-tuned so the roof
+  overhangs never collide — `drawTriRoof` spans `x-8 .. x+w+8`, wider than
+  the wall block, and the path sits exactly in the gap between the bookstore
+  and cafe roofs. Adding a fifth building means re-spacing the whole row,
+  not just appending one.
 - A weighted rule table (`preferredLocations()`) picks where he'd rather be
   based on weather + time of day (bookstore weighted into rainy/foggy/cloudy
   as a cosy indoor option); a 45s timer rerolls it if idle, or the "Nudge
