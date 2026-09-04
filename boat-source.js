@@ -127,6 +127,7 @@ let connected = false;
 let lastError = null;
 let reconnectDelay = 5000;
 let reconnectTimer = null;
+let rawFrames = 0;
 let messageCount = 0;
 let started = false;
 let everAuthed = false;   // true once real AIS data has arrived at least once
@@ -143,6 +144,18 @@ function prune(){
       positions.delete(mmsi); statics.delete(mmsi);
     }
   }
+}
+
+// aisstream sends its JSON over binary WebSocket frames. With
+// `binaryType = 'arraybuffer'` set on the socket those arrive as an
+// ArrayBuffer, which decodes synchronously; the Blob branch is a safety net
+// (Blob is the default binaryType, and reading it is async).
+const DECODER = new TextDecoder();
+function frameToText(data){
+  if (typeof data === 'string') return data;
+  if (data instanceof ArrayBuffer) return DECODER.decode(data);
+  if (ArrayBuffer.isView(data)) return DECODER.decode(data);
+  return null;
 }
 
 function handleMessage(raw){
@@ -199,6 +212,8 @@ function connect(){
     return;
   }
 
+  ws.binaryType = 'arraybuffer';
+
   ws.addEventListener('open', () => {
     connected = true;
     lastError = null;
@@ -211,9 +226,14 @@ function connect(){
     }));
   });
 
-  ws.addEventListener('message', (ev) => {
-    // An auth failure arrives as a plain-text frame, not JSON.
-    const text = typeof ev.data === 'string' ? ev.data : String(ev.data);
+  ws.addEventListener('message', async (ev) => {
+    rawFrames++;
+    let text = frameToText(ev.data);
+    if (text === null) {
+      // Blob fallback — only reached if binaryType didn't take effect.
+      try { text = await ev.data.text(); } catch { return; }
+    }
+    // An auth or subscription failure arrives as a plain-text frame, not JSON.
     if (text.startsWith('Error') || text.includes('Invalid API key')) {
       lastError = text.slice(0, 200);
       return;
@@ -289,6 +309,7 @@ function getBoats(limit = 12){
     connected,
     error: lastError,
     tracking: positions.size,
+    frames: rawFrames,
     messages: messageCount,
     boats: out.slice(0, limit),
   };
@@ -314,11 +335,14 @@ if (require.main === module) {
   start();
   setTimeout(() => {
     const snap = getBoats(20);
-    console.log(`\nConnected: ${snap.connected} | AIS messages: ${snap.messages} | vessels tracked: ${snap.tracking}`);
+    console.log(`\nConnected: ${snap.connected} | frames: ${snap.frames} | AIS messages: ${snap.messages} | vessels tracked: ${snap.tracking}`);
     if (snap.error) console.log(`Last error: ${snap.error}`);
     if (!snap.boats.length) {
-      if (!snap.messages) {
+      if (!snap.frames) {
         console.log('\nNo data received at all — check the key above rather than the sea.');
+      } else if (!snap.messages) {
+        console.log(`\n${snap.frames} frames arrived but none parsed — that is a bug in this file,`);
+        console.log('not a problem with your key or the sea.');
       } else {
         console.log('\nConnected fine, but no vessels in range yet. The sea off Whitley Bay');
         console.log('can genuinely be empty — try a longer listen:  node boat-source.js 120');

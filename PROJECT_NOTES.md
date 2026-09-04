@@ -221,6 +221,18 @@ Implementation notes:
   you run the server from. If a fresh install still isn't found, check
   where your shell's rc file (e.g. `~/.zshrc`) put it — it's commonly a
   symlink under `~/.local/bin/claude`.
+- **aisstream sends its JSON over *binary* WebSocket frames.** Node's built-in
+  `WebSocket` defaults `binaryType` to `'blob'`, so `String(ev.data)` yields the
+  literal string `"[object Blob]"` and every message silently fails to parse —
+  it looks exactly like "connected fine but the sea is empty". `boat-source.js`
+  sets `ws.binaryType = 'arraybuffer'` and decodes with `TextDecoder`. The CLI
+  test now reports raw frame count separately from parsed messages so this
+  class of bug is visible rather than mistaken for an empty ocean.
+- **Ship categories start as `unknown` and fill in over a few minutes.** Names,
+  types and destinations come from `ShipStaticData`, which vessels broadcast
+  only every ~6 minutes, whereas positions arrive every few seconds. A short
+  `node boat-source.js 45` run will show mostly `unknown`; that's expected, and
+  self-corrects once the server has been running a while.
 - **A bad aisstream key looks like a network failure.** aisstream accepts the
   WebSocket first and only then validates your subscription, so a wrong key
   shows up as an immediate close with no data. `boat-source.js` detects this
