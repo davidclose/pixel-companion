@@ -429,7 +429,59 @@
     sunny: ['Lovely bit of sun.'],
   };
 
+  // AIS destinations are terse port codes. Translate the handful that actually
+  // come up on this stretch of coast; anything else is just shown as broadcast.
+  const PORT_NAMES = {
+    'GBTYN': 'the Tyne', 'GBNCL': 'Newcastle', 'GBSSH': 'South Shields',
+    'GBBLY': 'Blyth', 'GB TYNE': 'the Tyne', 'TYNE': 'the Tyne',
+    'BLYTH/BOWF': 'the Blyth wind farm', 'GBSUN': 'Sunderland',
+    'GBHRT': 'Hartlepool', 'NLIJM': 'IJmuiden', 'NLAMS': 'Amsterdam',
+    'GBIMM': 'Immingham', 'GBLEI': 'Leith', 'DKESB': 'Esbjerg',
+  };
+  function portName(code){
+    if (!code) return null;
+    return PORT_NAMES[code.toUpperCase().trim()] || null;
+  }
+
+  // AIS names are broadcast in block capitals, which reads like shouting in a
+  // speech bubble.
+  function vesselCase(n){
+    return n.toLowerCase().replace(/(^|[\s'-])([a-z])/g, (m,a,b) => a + b.toUpperCase());
+  }
+
+  // The AIS category words are fine as data labels but stilted out loud —
+  // nobody standing on a beach says "a passenger vessel".
+  const SPOKEN_CATEGORY = {
+    cargo: 'cargo ship', tanker: 'tanker', passenger: 'ferry',
+    fishing: 'fishing boat', sailing: 'yacht', pleasure: 'little pleasure boat',
+    tug: 'tug', service: 'workboat', fast: 'fast craft', military: 'navy boat',
+  };
+
+  // An offhand remark about a ship he can actually see. Kept local rather than
+  // asking Claude, so the beach still feels alive with no bridge running.
+  function boatSpeech(){
+    if (state.location !== 'beach' || !state.boatsLive || !state.boats.length) return null;
+    const named = state.boats.filter(b => b.name && !/^Vessel /.test(b.name));
+    if (!named.length) return null;
+    const b = named[Math.floor(Math.random() * Math.min(4, named.length))];
+    const nm = vesselCase(b.name);
+    const lines = [`That's the ${nm} out there.`];
+    if (b.moving && b.speedKts > 6) lines.push(`The ${nm}'s fairly shifting along.`);
+    if (!b.moving) lines.push(`The ${nm}'s been sat out there a while.`);
+    const kind = SPOKEN_CATEGORY[b.category];
+    if (kind) lines.push(`Looks like a ${kind}, that one.`);
+    const dest = portName(b.destination);
+    if (dest) lines.push(`The ${nm}'s away to ${dest}.`);
+    if (b.distanceKm < 4) lines.push(`That one's close in — the ${nm}.`);
+    return lines[Math.floor(Math.random() * lines.length)];
+  }
+
   function pickSpeech(){
+    // On the beach he'd more often than not be remarking on a passing ship.
+    if (state.location === 'beach' && Math.random() < 0.6){
+      const line = boatSpeech();
+      if (line) return line;
+    }
     const w = mapWeather(state.weather.code);
     const pool = [...(SPEECH[state.location]||[]), ...(SPEECH[w]||[])];
     return pool[Math.floor(Math.random()*pool.length)];
@@ -1461,7 +1513,7 @@
     if (typeof b.speedKts === 'number'){
       lines.push(b.speedKts > 0.5 ? b.speedKts + ' knots' : 'At anchor / moored');
     }
-    if (b.destination) lines.push('Bound for ' + b.destination);
+    if (b.destination) lines.push('Bound for ' + (portName(b.destination) || b.destination));
     for (const text of lines){
       const el = document.createElement('span');
       el.className = 'bt-line';

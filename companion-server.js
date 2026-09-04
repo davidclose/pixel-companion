@@ -57,6 +57,40 @@ const CLAUDE_BIN = resolveClaudeBin();
 const NEUTRAL_CWD = path.join(os.tmpdir(), 'pixel-companion-chat-cwd');
 fs.mkdirSync(NEUTRAL_CWD, { recursive: true });
 
+// Turn a bearing into something a person would actually say.
+function compass(deg){
+  const names = ['due north','north-east','east','south-east','due south','south-west','west','north-west'];
+  return names[Math.round(((deg % 360) + 360) % 360 / 45) % 8];
+}
+
+// A short, plain-language description of what's actually out on the water, so
+// he can talk about the ships he can see. Deliberately compact: this rides
+// along on every chat message.
+function describeBoats(){
+  let snap;
+  try { snap = boats.getBoats(6); } catch { return ''; }
+  if (!snap.ok || !snap.boats.length) return '';
+
+  const lines = snap.boats.map((b) => {
+    const bits = [b.name];
+    if (b.category && b.category !== 'unknown' && b.category !== 'other') bits.push(`a ${b.category} vessel`);
+    if (b.lengthM) bits.push(`${b.lengthM}m long`);
+    bits.push(`${b.distanceKm}km ${compass(b.bearing)}`);
+    bits.push(b.moving ? `under way at ${b.speedKts} knots` : 'stopped or at anchor');
+    if (b.destination) bits.push(`destination given as "${b.destination}"`);
+    return '- ' + bits.join(', ');
+  });
+
+  return `\n\nShips within sight of the beach right now, from their live AIS ` +
+    `transponders:\n${lines.join('\n')}\n` +
+    `Destinations are AIS codes, usually UN/LOCODE (GBTYN is the Port of Tyne, ` +
+    `GBNCL is Newcastle) — say the place name, never the code. Talk about these ` +
+    `only if the user asks about the sea or ships, or if you're at the beach and ` +
+    `one is worth a passing remark. Mention at most one or two, the way someone ` +
+    `would nod at a ship on the horizon — never list them. This is what you can ` +
+    `see, so don't say you looked it up.`;
+}
+
 function buildSystemPrompt(weather, location, isDay) {
   return `You are a quiet, easygoing pixel-art companion character living in a small ` +
     `desktop app, based in Whitley Bay, UK. Right now it's ${weather} and ` +
@@ -66,7 +100,8 @@ function buildSystemPrompt(weather, location, isDay) {
     `user's day, not an assistant — don't offer to help with tasks, just talk like a person would. ` +
     `If you use web search, mention what you found as an offhand in-character remark, like you ` +
     `glanced at your phone — never as a report or news summary. This is plain chat text with no ` +
-    `markdown rendering, so never include a "Sources:" list, citations, or raw URLs/links of any kind.`;
+    `markdown rendering, so never include a "Sources:" list, citations, or raw URLs/links of any kind.` +
+    describeBoats();
 }
 
 // Enabling any tool (even just web search) pulls in a much larger default

@@ -237,6 +237,26 @@ arrive off a public radio feed and must never be able to act as markup. Tapping
 works too, for touch. With no live data the sea falls back to fixed example
 boats, and the card says so explicitly rather than passing them off as real.
 
+**He can talk about the ships.** `describeBoats()` in `companion-server.js`
+appends a short plain-language list of what's currently in view to the chat
+system prompt. The server already holds the AIS data in-process, so nothing
+extra is sent from the page. Bearings become words ("south-east", not "148°"),
+and the prompt tells him destinations are UN/LOCODE and to say the place name
+rather than the code — Claude decodes these fine, so no lookup table is needed
+server-side. It's gated in the prompt: he mentions a ship only if asked about
+the sea, or if he's at the beach and one is worth a passing remark, at most one
+or two, never as a list. Verified: asked at the beach he picked out Princess
+Seaways heading for Newcastle; asked at home how his day was, he didn't mention
+the sea at all.
+
+His idle speech bubbles do this too, but **locally** rather than via the
+bridge (`boatSpeech()` in the page), so the beach still feels alive with no
+server running. Those need a small `PORT_NAMES` table since there's no model to
+interpret codes, plus `SPOKEN_CATEGORY` — the AIS words are fine as data labels
+but stilted out loud, and nobody says "a passenger vessel" standing on a beach.
+`vesselCase()` softens the block capitals AIS broadcasts names in, which
+otherwise read as shouting in a speech bubble.
+
 Implementation notes:
 - Two AIS message types are subscribed: `PositionReport` (position, speed,
   course — every few seconds) and `ShipStaticData` (name, type, destination,
@@ -326,10 +346,10 @@ Implementation notes:
 
 ## Ideas discussed for next steps
 
-- Let him comment on specific ships in chat ("that's the Amsterdam ferry
-  going out") by passing the current boat list into the chat system prompt.
 - Wider range of animated expressions/moods reacting to conversation tone.
 - Idle animations / small gestures (wave, nod) for extra life.
+- Give the beach a tide state (Open-Meteo has marine data) so the foam line
+  sits where the tide actually is.
 - A paid Apple Developer ID certificate, if the right-click-Open-once
   friction on a fresh install ever becomes a real problem (e.g. installing
   on another Mac) — would remove the Gatekeeper warning entirely.
