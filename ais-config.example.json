@@ -1,0 +1,4 @@
+{
+  "_comment": "Copy this file to ais-config.json and paste in your free key from https://aisstream.io. ais-config.json is gitignored so the key never reaches GitHub.",
+  "apiKey": "PASTE_YOUR_AISSTREAM_KEY_HERE"
+}

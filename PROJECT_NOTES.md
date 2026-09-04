@@ -160,6 +160,53 @@ the cheap no-tools path and only search-flavoured questions pay for it. The
 system prompt also tells it never to append a "Sources:"/link list, since
 the chat log renders plain escaped text with no markdown support.
 
+### Boats: live AIS vessel data
+
+The beach scene (in progress) draws real ships. `boat-source.js` streams live
+AIS — the transponder positions ships broadcast by law — from
+[aisstream.io](https://aisstream.io) for a bounding box covering the sea off
+Whitley Bay, the Tyne approaches to the south and Blyth to the north
+(`54.90,-1.55` to `55.25,-0.90`). Vessels really out there, in real positions.
+
+**Setup (one-off).** aisstream is free but needs a free key — sign up, create
+an API key, then:
+```bash
+mkdir -p ~/.pixel-companion
+echo '{"apiKey":"YOUR_KEY"}' > ~/.pixel-companion/ais-config.json
+node boat-source.js 60     # verify: prints vessels found in 60s
+```
+The key lives in `~/.pixel-companion/`, **not** in the project folder, on
+purpose: the packaged `.app` bundles its files into a read-only `app.asar`, so
+a key kept alongside the source would be frozen at build time and lost on every
+rebuild. A project-local `ais-config.json` also works (gitignored, see
+`ais-config.example.json`), as does an `AISSTREAM_API_KEY` env var.
+
+**Why it's server-side.** aisstream is WebSocket-only and its docs say to keep
+the key on your own server and proxy to clients. So `boat-source.js` runs
+inside `companion-server.js`'s process, holds the key, maintains the stream,
+and the page only ever polls `GET /boats` for an already-filtered summary. The
+key never reaches the browser and never reaches GitHub.
+
+**Zero dependencies still holds.** Node 22+ and Electron 43+ ship a global
+`WebSocket`, so no `ws` package was needed. Verified on Node 24.16 (terminal)
+and Electron's bundled Node 24.18.
+
+Implementation notes:
+- Two AIS message types are subscribed: `PositionReport` (position, speed,
+  course — every few seconds) and `ShipStaticData` (name, type, destination,
+  length — every ~6 minutes). They're kept in separate maps and merged on read,
+  since positions arrive far more often than names.
+- `categorise()` collapses AIS's fiddly numeric ship-type codes into a handful
+  of categories (fishing, sailing, pleasure, tug, passenger, cargo, tanker,
+  military, service, fast) — chosen so each can get its own boat sprite.
+- Each boat is returned with `distanceKm` and `bearing` from the beach, which
+  is what the scene needs to place it: distant boats small and high toward the
+  horizon, near boats larger and lower.
+- Stale vessels (30 min silent) are pruned; a 300-vessel cap is a backstop.
+- Reconnects with exponential backoff (5s doubling to 60s).
+- Degrades quietly, exactly like chat: no key or no network means `ok:false`
+  and the scene falls back to invented boats.
+
 ## Known gotchas
 
 - **Open the app via `http://localhost:8934/`, not the `.html` file**, if
@@ -174,9 +221,16 @@ the chat log renders plain escaped text with no markdown support.
   you run the server from. If a fresh install still isn't found, check
   where your shell's rc file (e.g. `~/.zshrc`) put it — it's commonly a
   symlink under `~/.local/bin/claude`.
-- Port 8934 is hardcoded. If something else is already using it, the server
+- **A bad aisstream key looks like a network failure.** aisstream accepts the
+  WebSocket first and only then validates your subscription, so a wrong key
+  shows up as an immediate close with no data. `boat-source.js` detects this
+  (nothing ever received) and says so explicitly rather than blaming the
+  network — if you see "closed the connection before sending any data", check
+  the key, not your wifi.
+- Port 8934 is the default, overridable with `PIXEL_COMPANION_PORT`. If something else is already using it, the server
   will fail to start with `EADDRINUSE` — find and stop whatever's holding
-  the port, or change `PORT` in `companion-server.js`. This also means
+  the port, or run with `PIXEL_COMPANION_PORT=8935 node companion-server.js`.
+  This also means
   **don't run the Electron app and `node companion-server.js` at the same
   time** — the second one to start will fail on the port.
 - The packaged `.app` is **unsigned** — no Apple Developer certificate is
@@ -217,7 +271,11 @@ the chat log renders plain escaped text with no markdown support.
 
 - `pixel-companion.html` — the app itself.
 - `companion-server.js` — optional local chat bridge + static server (used
-  standalone via terminal, or embedded by `main.js`).
+  standalone via terminal, or embedded by `main.js`). Also serves `/boats`.
+- `boat-source.js` — live AIS vessel feed for the beach scene. Run directly
+  (`node boat-source.js 60`) to test your key.
+- `ais-config.example.json` — template for the aisstream key. The real
+  `ais-config.json` is gitignored.
 - `main.js` / `package.json` / `tray-icon.png` — the Electron desktop-app
   shell (`npm start` for dev mode, `npm run dist` to build the `.app`/`.dmg`).
 - `build/icon.icns` — the app icon (generated from a hand-drawn 64×64

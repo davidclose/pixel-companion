@@ -23,8 +23,10 @@ const { execFile, execFileSync } = require('child_process');
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
+const boats = require('./boat-source.js');
 
-const PORT = 8934;
+// Override with PIXEL_COMPANION_PORT if something else already holds 8934.
+const PORT = Number(process.env.PIXEL_COMPANION_PORT) || 8934;
 const STATIC_DIR = __dirname;
 const MIME_TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json' };
 
@@ -181,6 +183,14 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Live vessel positions for the beach scene. The aisstream API key stays in
+  // this process — the page only ever sees this already-filtered summary.
+  if (req.method === 'GET' && req.url.split('?')[0] === '/boats') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(boats.getBoats(12)));
+    return;
+  }
+
   if (req.method === 'GET') {
     serveStatic(req, res);
     return;
@@ -191,6 +201,7 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, () => {
+  boats.start();   // no-op if no aisstream key is configured
   console.log(`Pixel Companion running at http://localhost:${PORT}`);
   console.log('Open that link in your browser (not the .html file directly) — real AI replies use your Claude Code login.');
   console.log('Press Ctrl+C to stop.');

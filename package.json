@@ -19,6 +19,7 @@
     "files": [
       "main.js",
       "companion-server.js",
+      "boat-source.js",
       "pixel-companion.html",
       "tray-icon.png",
       "package.json"
