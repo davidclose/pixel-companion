@@ -90,6 +90,42 @@
   }
   .speech.show{ opacity:1; transform: translateY(0); }
 
+  /* Hover card for a ship on the sea. */
+  .boat-tip{
+    position:absolute;
+    z-index: 5;
+    pointer-events:none;
+    opacity: 0;
+    transition: opacity 0.12s ease;
+    background: var(--cream);
+    color: #1c2f3d;
+    border: 2px solid var(--edge);
+    border-radius: 6px;
+    padding: 6px 8px;
+    max-width: 210px;
+    box-shadow: 0 6px 16px rgba(0,0,0,0.45);
+    transform: translate(-50%, -100%);
+  }
+  .boat-tip.show{ opacity: 1; }
+  .boat-tip .bt-name{
+    font-family:'Press Start 2P', monospace;
+    font-size: 8px;
+    line-height: 1.5;
+    color: #14202b;
+    display:block;
+    margin-bottom: 4px;
+    word-break: break-word;
+  }
+  .boat-tip .bt-line{
+    font-family:'Space Mono', monospace;
+    font-size: 10px;
+    line-height: 1.45;
+    color: #3b5266;
+    display:block;
+  }
+  .boat-tip .bt-note{ color:#8a5a3a; font-style: italic; }
+  canvas.boat-hover{ cursor: pointer; }
+
   .status{
     display:flex;
     align-items:center;
@@ -181,6 +217,7 @@
   <div class="frame">
     <canvas id="scene" width="320" height="240"></canvas>
     <div class="speech" id="speech"></div>
+    <div class="boat-tip" id="boatTip"></div>
   </div>
 
   <div class="status">
@@ -252,7 +289,14 @@
     flowerRed: '#d9636b', flowerYellow: '#e8c25a', flowerWhite: '#f2ece0', leafGreen: '#5c8a4a',
     smoke: 'rgba(220,220,220,0.45)',
     rain: '#a7c7d9', snow: '#ffffff', fog: 'rgba(212,222,228,0.5)',
-    star: '#f2e9dc', outline: '#241c16', ink: '#241c16', mouth: '#8a4c3a'
+    star: '#f2e9dc', outline: '#241c16', ink: '#241c16', mouth: '#8a4c3a',
+    // beach
+    seaDay: '#2f6f96', seaDayFar: '#5fa3c4', seaNight: '#132a3e', seaNightFar: '#24455f',
+    seaFoam: '#eaf5f8', sand: '#e2c99f', sandLight: '#eeddb8', sandDark: '#c4a87e',
+    sandWet: '#b79a72', pebble: '#9c8a72', headland: '#3d4a44', headlandFar: '#7d9099',
+    hullRed: '#a8433a', hullBlue: '#2f4a6b', hullBlack: '#1f1c1a', hullGrey: '#59686b',
+    hullWhite: '#e4e0d4', superWhite: '#efeade', boatWindow: '#2b3f52',
+    funnelRed: '#c4553f', mast: '#8a7a58', sail: '#f2ece0'
   };
 
   function rect(x,y,w,h,color){ ctx.fillStyle=color; ctx.fillRect(x,y,w,h); }
@@ -306,14 +350,18 @@
   // ---------- state ----------
   const state = {
     weather: { code: 3, temp: 12, isDay: 1, ok: false },
-    location: 'home',       // home | outside | cafe | work | bookstore
+    location: 'home',       // home | outside | cafe | work | bookstore | beach
     transitioning: false,
     animFrame: 0,
     speechTimer: 0,
     tick: 0,
+    boats: [],            // vessels currently drawn on the sea
+    boatsLive: false,     // true when these are real AIS positions
+    boatsAt: Date.now(),  // when they were fetched, for between-update drift
+    boatHits: [],         // hover targets, rebuilt every frame by drawBeach
   };
 
-  const LOCATIONS = ['home','outside','cafe','work','bookstore'];
+  const LOCATIONS = ['home','outside','cafe','work','bookstore','beach'];
 
   function mapWeather(code){
     if ([71,73,75,77,85,86].includes(code)) return 'snowy';
@@ -374,6 +422,7 @@
     cafe: ['One flat white, please.', 'Good spot to sit.', "This chair's comfy."],
     work: ['Just tidying a few things up.', 'Nearly done for today.', 'Focus mode.'],
     bookstore: ["Just browsing, honestly.", "Found something good.", "Quiet in here today.", "Smells like old paper in here."],
+    beach: ["Tide's on its way in.", "That's the Tyne ferry, that one.", "Could watch the boats all day.", "Sand in my shoes again.", "Something big heading for the Tyne."],
     rainy: ["Glad I'm not out in that.", 'Listen to that rain.'],
     snowy: ["It's properly coming down.", 'Might build something small.'],
     foggy: ['Can barely see the front gate.'],
@@ -399,8 +448,8 @@
     if (!state.weather.isDay) return ['home'];
     if (w === 'rainy' || w === 'snowy') return ['home','cafe','bookstore','home','bookstore'];
     if (w === 'foggy') return ['home','cafe','bookstore'];
-    if (w === 'sunny') return ['outside','cafe','work','outside'];
-    return ['outside','work','cafe','bookstore','home']; // cloudy
+    if (w === 'sunny') return ['outside','beach','cafe','beach','work','outside'];
+    return ['outside','work','beach','cafe','bookstore','home']; // cloudy
   }
 
   function maybeRelocate(force){
@@ -419,9 +468,47 @@
     setTimeout(()=>{
       state.location = next;
       state.transitioning = false;
+      if (next === 'beach') fetchBoats();   // arrive to an up-to-date sea
       updateStatusUI();
       showSpeech(pickSpeech());
     }, 2600);
+  }
+
+  // ---------- boats ----------
+  // Real vessel positions come from GET /boats, which companion-server.js
+  // feeds from live AIS. Opened as a bare file:// page (or with no aisstream
+  // key set up) there's no server to ask, so the sea falls back to a fixed
+  // set of stand-ins — same graceful degradation as chat's canned replies.
+  // They're flagged as examples so the hover card never passes them off as real.
+  const EXAMPLE_BOATS = [
+    { name:'Example cargo ship', category:'cargo',     distanceKm: 6.5, bearing: 78,  speedKts: 9,   course: 200, example:true },
+    { name:'Example ferry',      category:'passenger', distanceKm: 11,  bearing: 120, speedKts: 14,  course: 20,  example:true },
+    { name:'Example tug',        category:'tug',       distanceKm: 4,   bearing: 160, speedKts: 3,   course: 190, example:true },
+    { name:'Example fishing boat', category:'fishing', distanceKm: 2.5, bearing: 100, speedKts: 1.5, course: 40,  example:true },
+    { name:'Example yacht',      category:'sailing',   distanceKm: 16,  bearing: 55,  speedKts: 5,   course: 150, example:true },
+  ];
+
+  function useExampleBoats(){
+    state.boats = EXAMPLE_BOATS;
+    state.boatsLive = false;
+    state.boatsAt = Date.now();
+  }
+
+  async function fetchBoats(){
+    try {
+      const res = await fetch('/boats', { cache: 'no-store' });
+      if (!res.ok) throw new Error('bad status');
+      const data = await res.json();
+      if (data && data.ok && Array.isArray(data.boats) && data.boats.length){
+        state.boats = data.boats;
+        state.boatsLive = true;
+        state.boatsAt = Date.now();
+        return;
+      }
+      useExampleBoats();
+    } catch {
+      useExampleBoats();
+    }
   }
 
   // ---------- drawing helpers ----------
@@ -849,6 +936,248 @@
     blob(244,150,12,'#5c8a4f');
   }
 
+  // ---- beach ----
+  // Layout bands: sky 0..108, sea 108..178, wet sand 178..190, dry sand 190..240.
+  const HORIZON = 108, SHORE = 178;
+
+  // Where a real vessel sits on screen.
+  //  - bearing maps left-to-right: you face east from the beach, so north (0)
+  //    is on your left, east (90) straight ahead, south (180) on your right.
+  //    Anything behind that arc (up the river, inland) clamps to an edge.
+  //  - distance maps to depth: far boats sit high near the horizon and small,
+  //    near boats sit low and large.
+  // The arc is deliberately wider than a literal 180 degrees. Real traffic here
+  // bunches hard into two sectors — the Tyne mouth at ~170-190 to the south,
+  // and the run north past St Mary's at ~340-360 — so mapping a strict
+  // half-circle piles every vessel onto the two edges of the canvas.
+  const VIEW_ARC = 120;   // degrees either side of due east
+  function boatScreenPos(b){
+    let off = b.bearing - 90;
+    if (off > 180) off -= 360;
+    if (off < -180) off += 360;
+    const fx = Math.max(-1, Math.min(1, off / VIEW_ARC));
+    // Depth curve, not a straight ratio. Vessels round here sit between about
+    // 3 and 12 km out, which against a flat 0-22 km scale squeezes them all
+    // into one band halfway up the water. The exponent stretches that common
+    // range across the sea and lets genuinely distant ships compress toward
+    // the horizon, which is how perspective behaves anyway.
+    const f = Math.pow(Math.min(b.distanceKm, 16) / 16, 0.7);   // 0 = close, 1 = horizon
+    return {
+      x: W/2 + fx * 140,
+      y: HORIZON + 3 + (1 - f) * 62,
+      s: 0.5 + (1 - f) * 2.1,
+    };
+  }
+
+  // One boat, drawn facing the way it's actually steaming.
+  function drawBoat(cx, waterY, s, cat){
+    let L, hullH, hull, style;
+    switch (cat) {
+      case 'cargo':     L=24; hullH=5; hull=PAL.hullRed;   style='cargo';   break;
+      case 'tanker':    L=26; hullH=6; hull=PAL.hullBlack; style='cargo';   break;
+      case 'passenger': L=22; hullH=5; hull=PAL.hullBlue;  style='ferry';   break;
+      case 'military':  L=19; hullH=4; hull=PAL.hullGrey;  style='ferry';   break;
+      case 'fast':      L=13; hullH=3; hull=PAL.hullWhite; style='fast';    break;
+      case 'tug':       L=10; hullH=4; hull=PAL.hullRed;   style='tug';     break;
+      case 'service':   L=12; hullH=4; hull='#c98b3a';     style='tug';     break;
+      case 'fishing':   L=11; hullH=4; hull='#2f6b8a';     style='fishing'; break;
+      case 'sailing':   L=9;  hullH=3; hull=PAL.hullWhite; style='sail';    break;
+      case 'pleasure':  L=9;  hullH=3; hull=PAL.hullWhite; style='fast';    break;
+      default:          L=12; hullH=4; hull='#7a6a58';     style='fishing';
+    }
+    L *= s; hullH = Math.max(2, hullH * s);
+    const half = L / 2;
+
+    ctx.save();
+    ctx.translate(cx, waterY);
+
+    // Reflection first, so the hull sits on top of it.
+    ctx.globalAlpha = 0.22;
+    ctx.fillStyle = hull;
+    for (let i = 1; i <= 3; i++) ctx.fillRect(-half*0.7, i*Math.max(1,s), L*0.7, Math.max(1, s*0.6));
+    ctx.globalAlpha = 1;
+
+    const deck = -hullH;
+    // Outlined hull: raked bow to the right, tucked-in stern to the left.
+    ctx.fillStyle = PAL.outline;
+    ctx.beginPath();
+    ctx.moveTo(-half-1, deck-1); ctx.lineTo(half+1, deck-1);
+    ctx.lineTo(half-hullH*0.7, 1); ctx.lineTo(-half+hullH*0.5, 1);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = hull;
+    ctx.beginPath();
+    ctx.moveTo(-half, deck); ctx.lineTo(half, deck);
+    ctx.lineTo(half-hullH*0.7, 0); ctx.lineTo(-half+hullH*0.5, 0);
+    ctx.closePath(); ctx.fill();
+    // Sunlit strip along the deck edge.
+    ctx.fillStyle = shade(hull, 0.16);
+    ctx.fillRect(-half+1, deck, L-2, Math.max(1, s*0.7));
+
+    const up = (h) => deck - h;   // superstructure sits on the deck
+    const bw = (n) => Math.max(1, Math.round(n*s));
+
+    if (style === 'cargo') {
+      // Blocky accommodation aft, cargo stacked along the deck.
+      const sw = bw(5), sh = bw(6);
+      rect(-half+bw(1), up(sh), sw, sh, PAL.superWhite);
+      rect(-half+bw(1), up(sh), sw, bw(1), shade(PAL.superWhite, 0.15));
+      rect(-half+bw(2), up(bw(1)+sh*0.55), bw(3), bw(1), PAL.boatWindow);
+      rect(-half+bw(2), up(sh+bw(3)), bw(2), bw(3), PAL.funnelRed);   // funnel
+      const boxes = ['#3f7a55','#9c5a3c','#3d5f86','#8a7a3a'];
+      for (let i = 0; i < 4; i++) {
+        rect(-half+bw(8)+i*bw(4), up(bw(3)), bw(3), bw(3), boxes[i % boxes.length]);
+      }
+    } else if (style === 'ferry') {
+      // Two tiers of white superstructure with a row of windows.
+      const sh = bw(4);
+      rect(-half+bw(2), up(sh), L-bw(6), sh, PAL.superWhite);
+      rect(-half+bw(4), up(sh+bw(3)), L-bw(12), bw(3), shade(PAL.superWhite, -0.06));
+      for (let i = 0; i < 5; i++) rect(-half+bw(4)+i*bw(3), up(sh*0.6), bw(2), bw(1), PAL.boatWindow);
+      rect(-bw(1), up(sh+bw(6)), bw(3), bw(3), PAL.funnelRed);
+    } else if (style === 'tug') {
+      // Short and tall — wheelhouse high above a stubby hull.
+      rect(-bw(2), up(bw(6)), bw(5), bw(6), PAL.superWhite);
+      rect(-bw(1), up(bw(4)), bw(3), bw(1), PAL.boatWindow);
+      rect(bw(1), up(bw(9)), bw(2), bw(3), PAL.funnelRed);
+    } else if (style === 'fishing') {
+      // Wheelhouse forward, mast and derrick aft.
+      rect(bw(1), up(bw(4)), bw(4), bw(4), PAL.superWhite);
+      rect(bw(2), up(bw(3)), bw(2), bw(1), PAL.boatWindow);
+      rect(-bw(3), up(bw(9)), Math.max(1, bw(1)), bw(9), PAL.mast);
+      ctx.strokeStyle = PAL.mast; ctx.lineWidth = Math.max(1, s*0.5);
+      ctx.beginPath(); ctx.moveTo(-bw(3), up(bw(9))); ctx.lineTo(bw(3), up(bw(4))); ctx.stroke();
+    } else if (style === 'sail') {
+      // Mast plus a single triangular sail.
+      rect(0, up(bw(14)), Math.max(1, bw(1)), bw(14), PAL.mast);
+      ctx.fillStyle = PAL.outline;
+      ctx.beginPath();
+      ctx.moveTo(-1, up(bw(14))-1); ctx.lineTo(-1, up(bw(1)));
+      ctx.lineTo(-bw(7)-1, up(bw(1))); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = PAL.sail;
+      ctx.beginPath();
+      ctx.moveTo(0, up(bw(13))); ctx.lineTo(0, up(bw(2)));
+      ctx.lineTo(-bw(6), up(bw(2))); ctx.closePath(); ctx.fill();
+    } else if (style === 'fast') {
+      rect(-bw(2), up(bw(3)), bw(5), bw(3), PAL.superWhite);
+      rect(-bw(1), up(bw(2)), bw(3), bw(1), PAL.boatWindow);
+    }
+
+    ctx.restore();
+  }
+
+  function drawBeach(t, w, isDay){
+    skyGradient(0, 0, W, HORIZON, isDay);
+    if (isDay){
+      if (w === 'sunny') drawSun(t);
+      if (w !== 'sunny') drawClouds(t, w !== 'cloudy');
+    } else {
+      drawStars(t);
+    }
+
+    // Sea, darkening toward the shore so the horizon reads as distance.
+    const g = ctx.createLinearGradient(0, HORIZON, 0, SHORE);
+    g.addColorStop(0, isDay ? PAL.seaDayFar : PAL.seaNightFar);
+    g.addColorStop(1, isDay ? PAL.seaDay : PAL.seaNight);
+    ctx.fillStyle = g; ctx.fillRect(0, HORIZON, W, SHORE - HORIZON);
+    rect(0, HORIZON, W, 2, shade(isDay ? PAL.seaDayFar : PAL.seaNightFar, -0.10));
+
+    // St Mary's Island, up the coast to the north — so, off to your left. Kept
+    // low and hazy: it's a couple of miles off, and a hard dark mass this high
+    // in a bright sky reads as a hill in the wrong place rather than distance.
+    const hl = isDay ? PAL.headlandFar : shade(PAL.headland, -0.10);
+    ctx.fillStyle = hl;
+    ctx.beginPath(); ctx.arc(30, HORIZON + 6, 15, Math.PI, 0); ctx.fill();
+    const lx = 27, lTop = HORIZON - 15;
+    rect(lx, lTop, 4, 16, isDay ? '#dcdcd2' : '#7d8890');   // tower
+    rect(lx, lTop - 3, 4, 3, isDay ? '#8f9aa0' : PAL.outline); // lamp housing
+    // The light turns: lit for part of each cycle.
+    if (!isDay && Math.floor(t / 8) % 3 === 0) rect(lx - 1, lTop - 3, 6, 3, PAL.lampGlow);
+
+    // Wave rows. Longer, thicker and faster toward the front for perspective.
+    for (let row = 0; row < 9; row++){
+      const ry = HORIZON + 6 + row * 7;
+      if (ry > SHORE - 4) break;
+      const depth = row / 8;
+      const len = 3 + depth * 9;
+      const speed = 0.5 + depth * 1.6;
+      const gap = 26 + row * 3;
+      ctx.fillStyle = isDay
+        ? 'rgba(233,246,250,' + (0.16 + depth * 0.24) + ')'
+        : 'rgba(180,205,225,' + (0.10 + depth * 0.16) + ')';
+      for (let x = -gap; x < W + gap; x += gap){
+        const wx = x + ((t * speed + row * 13) % gap);
+        ctx.fillRect(Math.round(wx), ry, Math.round(len), Math.max(1, Math.round(1 + depth * 1.5)));
+      }
+    }
+
+    // Boats: farthest first, so nearer ones correctly overlap them.
+    state.boatHits.length = 0;
+    const elapsed = (Date.now() - state.boatsAt) / 1000;
+    const placed = [];
+    for (const b of state.boats){
+      const pos = boatScreenPos(b);
+      // Between server updates, let moving vessels carry on in the direction
+      // they were last steaming, and everything ride the swell a little.
+      const west = (b.course > 180 && b.course < 360);
+      const drift = Math.max(-12, Math.min(12, (b.speedKts || 0) * elapsed * 0.05)) * (west ? -1 : 1);
+      placed.push({
+        b, west, s: pos.s,
+        x: pos.x + drift,
+        y: pos.y + Math.sin((t / 9) + b.distanceKm) * (0.6 + pos.s * 0.5),
+        hw: Math.max(18, 26 * pos.s),
+        hh: Math.max(15, 22 * pos.s),
+      });
+    }
+
+    // Even across a wide arc, vessels queueing for the same river mouth land
+    // almost on top of one another. Nudge apart any that would overlap at a
+    // similar depth, so each stays separately visible and hoverable.
+    placed.sort((a, b) => a.x - b.x);
+    for (let i = 1; i < placed.length; i++){
+      const prev = placed[i-1], cur = placed[i];
+      const need = (prev.hw + cur.hw) * 0.5 + 3;
+      if (Math.abs(cur.y - prev.y) < 15 && cur.x - prev.x < need) cur.x = prev.x + need;
+    }
+    for (const q of placed) q.x = Math.max(14, Math.min(W - 14, q.x));
+
+    placed.sort((a, b) => b.b.distanceKm - a.b.distanceKm);
+    for (const q of placed){
+      const x = Math.round(q.x), y = Math.round(q.y);
+      ctx.save();
+      ctx.translate(x, y);
+      if (q.west) ctx.scale(-1, 1);   // mirror about the boat's own centre
+      drawBoat(0, 0, q.s, q.b.category);
+      ctx.restore();
+      state.boatHits.push({ x: x - q.hw/2, y: y - q.hh + 4, w: q.hw, h: q.hh, boat: q.b });
+    }
+
+    // Wet sand, then the foam edge riding up and down the beach.
+    rect(0, SHORE, W, 12, PAL.sandWet);
+    const tide = Math.sin(t / 22) * 3;
+    ctx.fillStyle = PAL.seaFoam;
+    for (let x = 0; x < W; x += 2){
+      const fy = SHORE + tide + Math.sin((x / 17) + t / 5) * 2;
+      ctx.fillRect(x, Math.round(fy), 2, 3);
+    }
+
+    // Dry sand.
+    rect(0, SHORE + 12, W, H - SHORE - 12, PAL.sand);
+    rect(0, SHORE + 12, W, 3, PAL.sandDark);
+    speckle(0, SHORE + 16, W, H - SHORE - 16, PAL.sandLight, 0.004, 3);
+    speckle(0, SHORE + 16, W, H - SHORE - 16, PAL.sandDark, 0.003, 9);
+    // A few pebbles and a bit of driftwood, fixed so they don't crawl about.
+    [[38,214],[92,228],[203,206],[268,224],[141,236]].forEach(([px,py], i) => {
+      rect(px, py, 3 + (i % 2), 2, PAL.pebble);
+    });
+    rect(232, 216, 18, 3, PAL.woodDark);
+    rect(234, 214, 12, 2, PAL.woodMid);
+
+    if (!isDay) rect(0, 0, W, H, 'rgba(10,15,25,0.35)');
+    if (w === 'rainy') drawRain(t);
+    if (w === 'snowy') drawSnow(t);
+    if (w === 'foggy') drawFogOverlay();
+  }
+
   function drawDragon(x,y){
     block(x,y,20,8,PAL.dragonGreen,1);
     block(x-6,y+2,8,4,PAL.dragonGreen,1);
@@ -928,16 +1257,23 @@
     } else if (state.location === 'bookstore'){
       drawBookstore(t,w,isDay);
       drawCharacter(148, 164, Math.floor(t/4)%2, false, false);
+    } else if (state.location === 'beach'){
+      drawBeach(t,w,isDay);
+      // standing legs end at y+44, so y=174 puts his feet on the dry sand
+      drawCharacter(120 + Math.sin(t/16)*46, 174, Math.floor(t/3)%2, false, false);
     } else {
       drawOutside(t,w,isDay);
       // character is 27 wide drawn from x-3, so x=148 centres him on the 140..180 path
       drawCharacter(148 + Math.sin(t/10)*6, 156, Math.floor(t/3)%2, false, false);
     }
 
+    if (state.location !== 'beach') state.boatHits.length = 0;
     state.tick += 1;
   }
 
   setInterval(render, 180);
+  fetchBoats();
+  setInterval(fetchBoats, 45000);
   setInterval(()=> maybeRelocate(false), 45000);
   setInterval(fetchWeather, 30*60*1000);
 
@@ -1075,6 +1411,98 @@
       showSpeech(reply.length > 70 ? reply.slice(0, 67) + '…' : reply);
     }, 300 + Math.random() * 400); // small delay so it doesn't feel instant/robotic
   }
+
+  // ---------- hovering a ship ----------
+  // drawBeach records a hit box per boat each frame, in the canvas's own
+  // 320x240 space. The canvas is stretched to fit its container, so pointer
+  // coordinates get scaled back into that space before testing.
+  const boatTip = document.getElementById('boatTip');
+  const frameEl = document.querySelector('.frame');
+  let hoveredBoat = null;
+
+  function boatAt(clientX, clientY){
+    const r = canvas.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    const lx = (clientX - r.left) / r.width * W;
+    const ly = (clientY - r.top) / r.height * H;
+    // Back to front: the nearest boat is drawn last, so it wins an overlap.
+    for (let i = state.boatHits.length - 1; i >= 0; i--){
+      const h = state.boatHits[i];
+      if (lx >= h.x && lx <= h.x + h.w && ly >= h.y && ly <= h.y + h.h) return h;
+    }
+    return null;
+  }
+
+  function describeBoat(b){
+    const bits = [];
+    if (b.category && b.category !== 'unknown' && b.category !== 'other'){
+      bits.push(b.category.charAt(0).toUpperCase() + b.category.slice(1));
+    }
+    if (typeof b.lengthM === 'number' && b.lengthM > 0) bits.push(b.lengthM + ' m');
+    return bits.join(' · ');
+  }
+
+  function showBoatTip(hit){
+    const b = hit.boat;
+    // Vessel names come off a public radio feed — build with textContent so a
+    // name can never be interpreted as markup.
+    boatTip.textContent = '';
+    const name = document.createElement('span');
+    name.className = 'bt-name';
+    name.textContent = b.name || 'Unknown vessel';
+    boatTip.appendChild(name);
+
+    const lines = [];
+    const desc = describeBoat(b);
+    if (desc) lines.push(desc);
+    if (typeof b.distanceKm === 'number'){
+      lines.push(b.distanceKm + ' km away, bearing ' + b.bearing + '°');
+    }
+    if (typeof b.speedKts === 'number'){
+      lines.push(b.speedKts > 0.5 ? b.speedKts + ' knots' : 'At anchor / moored');
+    }
+    if (b.destination) lines.push('Bound for ' + b.destination);
+    for (const text of lines){
+      const el = document.createElement('span');
+      el.className = 'bt-line';
+      el.textContent = text;
+      boatTip.appendChild(el);
+    }
+    if (b.example){
+      const el = document.createElement('span');
+      el.className = 'bt-line bt-note';
+      el.textContent = 'Example only — no live boat data';
+      boatTip.appendChild(el);
+    }
+
+    const r = canvas.getBoundingClientRect();
+    const fr = frameEl.getBoundingClientRect();
+    const sx = r.width / W, sy = r.height / H;
+    boatTip.style.left = ((hit.x + hit.w/2) * sx + (r.left - fr.left)) + 'px';
+    boatTip.style.top  = (hit.y * sy + (r.top - fr.top) - 6) + 'px';
+    boatTip.classList.add('show');
+  }
+
+  function hideBoatTip(){
+    boatTip.classList.remove('show');
+    canvas.classList.remove('boat-hover');
+    hoveredBoat = null;
+  }
+
+  canvas.addEventListener('mousemove', (e) => {
+    const hit = boatAt(e.clientX, e.clientY);
+    if (!hit){ hideBoatTip(); return; }
+    canvas.classList.add('boat-hover');
+    // Reposition every move so the card tracks a boat as it drifts.
+    hoveredBoat = hit.boat;
+    showBoatTip(hit);
+  });
+  canvas.addEventListener('mouseleave', hideBoatTip);
+  // Touch: tap a boat to see it, tap elsewhere to dismiss.
+  canvas.addEventListener('click', (e) => {
+    const hit = boatAt(e.clientX, e.clientY);
+    if (hit) showBoatTip(hit); else hideBoatTip();
+  });
 
   document.getElementById('sendBtn').addEventListener('click', sendChat);
   document.getElementById('chatInput').addEventListener('keydown', (e)=>{

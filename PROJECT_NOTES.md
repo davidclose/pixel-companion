@@ -1,8 +1,9 @@
 # Pixel Companion — Project Notes
 
-A small pixel-art desktop companion that lives in five scenes (home, cafe,
-work, bookstore, outside), reacts to real weather in Whitley Bay, UK, and can
-hold a real conversation via a local Claude Code bridge. Originally built as
+A small pixel-art desktop companion that lives in six scenes (home, cafe,
+work, bookstore, outside, beach), reacts to real weather in Whitley Bay, UK,
+watches real ships pass on the North Sea, and can hold a real conversation via
+a local Claude Code bridge. Originally built as
 a Claude.ai artifact; moved to Claude Code so it can keep growing and run as
 a real local app. Public repo: https://github.com/davidclose/pixel-companion
 
@@ -191,6 +192,51 @@ key never reaches the browser and never reaches GitHub.
 `WebSocket`, so no `ws` package was needed. Verified on Node 24.16 (terminal)
 and Electron's bundled Node 24.18.
 
+**The identities are cached to disk.** `~/.pixel-companion/vessel-cache.json`.
+Positions expire after 30 minutes, but what a ship *is* — name, type, length —
+never changes, and vessels broadcast that only every ~6 minutes (moored ones
+are heard from rarely). Without a cache the scene draws `unknown` boats for
+ages after every launch. `prune()` therefore clears positions only, and
+deliberately leaves identities alone. After a few days' running the local fleet
+is essentially all known on startup.
+
+### The beach scene
+
+Bands: sky `0..108`, sea `108..178`, wet sand `178..190`, dry sand `190..240`.
+St Mary's Island sits low and hazy off to the north (your left), its light
+turning at night.
+
+Two mappings put a real vessel on screen, and both needed tuning against the
+actual data rather than first principles:
+
+- **Bearing to x.** You face east, so north (0°) is on your left and south
+  (180°) on your right. A literal half-circle map looked obvious and was
+  wrong: local traffic bunches into the Tyne mouth at ~170-190° and the run
+  north past St Mary's at ~340-360°, so every boat clamped to the two edges of
+  the canvas in a heap. `VIEW_ARC` is 120° either side of east instead, which
+  spreads both clusters into view.
+- **Distance to y and size.** Far boats sit high and small near the horizon.
+  A flat 0-22 km ratio also failed, because real vessels here are 3-12 km out
+  and landed in a single band halfway up the water. The curve is
+  `(min(d,16)/16) ** 0.7`, which stretches that common range across the sea.
+
+Even so, ships queueing for the same river mouth overlap, so after placement a
+pass nudges apart any two at a similar depth. It's a small visual liberty, and
+the alternative is boats stacked invisibly on top of each other.
+
+`drawBoat` picks a silhouette per category — container stacks for cargo, tiered
+white superstructure for ferries, a tall wheelhouse on a stubby hull for tugs,
+mast and derrick for fishing boats, a triangular sail for yachts. Vessels on a
+westerly course are mirrored so they face the way they're actually steaming.
+
+**Hovering.** `drawBeach` records a hit box per boat each frame into
+`state.boatHits`, in the canvas's own 320×240 space; pointer coordinates are
+scaled back into that space before testing, since the canvas is stretched to
+fit. The card is built with `textContent`, never `innerHTML` — vessel names
+arrive off a public radio feed and must never be able to act as markup. Tapping
+works too, for touch. With no live data the sea falls back to fixed example
+boats, and the card says so explicitly rather than passing them off as real.
+
 Implementation notes:
 - Two AIS message types are subscribed: `PositionReport` (position, speed,
   course — every few seconds) and `ShipStaticData` (name, type, destination,
@@ -202,7 +248,8 @@ Implementation notes:
 - Each boat is returned with `distanceKm` and `bearing` from the beach, which
   is what the scene needs to place it: distant boats small and high toward the
   horizon, near boats larger and lower.
-- Stale vessels (30 min silent) are pruned; a 300-vessel cap is a backstop.
+- Stale vessel *positions* (30 min silent) are pruned; a 300-vessel cap is a
+  backstop. Identities survive, by design — see the cache note above.
 - Reconnects with exponential backoff (5s doubling to 60s).
 - Degrades quietly, exactly like chat: no key or no network means `ok:false`
   and the scene falls back to invented boats.
@@ -233,6 +280,12 @@ Implementation notes:
   only every ~6 minutes, whereas positions arrive every few seconds. A short
   `node boat-source.js 45` run will show mostly `unknown`; that's expected, and
   self-corrects once the server has been running a while.
+- **`drawCharacter`'s `facingLeft` mirror is broken**, and has always been —
+  it does `translate(x*2,0); scale(-1,1)` and then draws at offsets from a
+  negated `x`, which lands at roughly `3x`. It has never shown up because every
+  `render()` call passes `facingLeft = false`. Don't copy that pattern: the
+  boats mirror correctly with `translate(x,y); scale(-1,1)` and then draw
+  centred on `0,0`. Fix `drawCharacter` before ever passing `true`.
 - **A bad aisstream key looks like a network failure.** aisstream accepts the
   WebSocket first and only then validates your subscription, so a wrong key
   shows up as an immediate close with no data. `boat-source.js` detects this
@@ -273,6 +326,8 @@ Implementation notes:
 
 ## Ideas discussed for next steps
 
+- Let him comment on specific ships in chat ("that's the Amsterdam ferry
+  going out") by passing the current boat list into the chat system prompt.
 - Wider range of animated expressions/moods reacting to conversation tone.
 - Idle animations / small gestures (wave, nod) for extra life.
 - A paid Apple Developer ID certificate, if the right-click-Open-once

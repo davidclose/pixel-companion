@@ -39,6 +39,10 @@ const STREAM_URL = 'wss://stream.aisstream.io/v0/stream';
 // Two places, checked in order. The home-directory one matters for the
 // packaged .app: its bundled files live inside a read-only app.asar, so a key
 // kept there would be frozen at build time and lost on every rebuild.
+// Learned vessel identities persist here. See the cache section below.
+const CACHE_FILE = path.join(os.homedir(), '.pixel-companion', 'vessel-cache.json');
+const MAX_CACHE = 2000;
+
 const CONFIG_FILES = [
   path.join(os.homedir(), '.pixel-companion', 'ais-config.json'),
   path.join(__dirname, 'ais-config.json'),
@@ -118,9 +122,53 @@ function cleanName(s){
 
 // ---------------------------------------------------------------------------
 // Live state
+//
+// Two maps with deliberately different lifetimes:
+//  - `positions` is ephemeral. Where a ship is right now, pruned when stale.
+//  - `statics` is a long-lived cache. What a ship *is* — name, type, length —
+//    doesn't change, but vessels only broadcast it every ~6 minutes (and
+//    moored ones are heard from rarely), so learning it fresh on every launch
+//    means the scene draws `unknown` boats for ages. Once learned it's kept
+//    and written to disk, so a restart already knows the local fleet.
 
 const positions = new Map();  // mmsi -> { lat, lon, sog, cog, heading, at }
-const statics   = new Map();  // mmsi -> { name, type, destination, length }
+const statics   = new Map();  // mmsi -> { name, type, destination, length, seen }
+
+let cacheDirty = false;
+let saveTimer = null;
+
+function loadCache(){
+  try {
+    const raw = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+    for (const [mmsi, v] of Object.entries(raw)) {
+      if (v && typeof v === 'object') statics.set(String(mmsi), v);
+    }
+  } catch { /* no cache yet — normal on first run */ }
+}
+
+function saveCache(){
+  try {
+    let entries = [...statics.entries()];
+    // Keep the cache bounded, dropping the least recently confirmed first.
+    if (entries.length > MAX_CACHE) {
+      entries.sort((a, b) => (b[1].seen || 0) - (a[1].seen || 0));
+      entries = entries.slice(0, MAX_CACHE);
+    }
+    fs.mkdirSync(path.dirname(CACHE_FILE), { recursive: true });
+    fs.writeFileSync(CACHE_FILE, JSON.stringify(Object.fromEntries(entries)));
+    cacheDirty = false;
+  } catch { /* a cache we can't write is a slower app, not a broken one */ }
+}
+
+// Batch writes: static data arrives in bursts, and this runs for hours.
+function markDirty(){
+  cacheDirty = true;
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => { saveTimer = null; if (cacheDirty) saveCache(); }, 10000);
+  saveTimer.unref?.();
+}
+
+process.on('exit', () => { if (cacheDirty) saveCache(); });
 
 let ws = null;
 let connected = false;
@@ -132,16 +180,17 @@ let messageCount = 0;
 let started = false;
 let everAuthed = false;   // true once real AIS data has arrived at least once
 
+// Only positions expire. Identities are kept deliberately — that's the cache.
 function prune(){
   const cutoff = Date.now() - STALE_MS;
   for (const [mmsi, p] of positions) {
-    if (p.at < cutoff) { positions.delete(mmsi); statics.delete(mmsi); }
+    if (p.at < cutoff) positions.delete(mmsi);
   }
   // Hard cap as a backstop, dropping the least recently heard from.
   if (positions.size > MAX_VESSELS) {
     const order = [...positions.entries()].sort((a, b) => a[1].at - b[1].at);
     for (const [mmsi] of order.slice(0, positions.size - MAX_VESSELS)) {
-      positions.delete(mmsi); statics.delete(mmsi);
+      positions.delete(mmsi);
     }
   }
 }
@@ -182,18 +231,25 @@ function handleMessage(raw){
     });
     // Names often arrive on the position message's metadata too.
     const nm = cleanName(meta.ShipName);
-    if (nm && !statics.has(mmsi)) statics.set(mmsi, { name: nm, type: 0 });
-    else if (nm && !statics.get(mmsi).name) statics.get(mmsi).name = nm;
+    if (nm) {
+      const existing = statics.get(mmsi);
+      if (!existing) { statics.set(mmsi, { name: nm, type: 0, seen: Date.now() }); markDirty(); }
+      else if (!existing.name) { existing.name = nm; existing.seen = Date.now(); markDirty(); }
+    }
 
   } else if (msg.MessageType === 'ShipStaticData') {
     const s = (msg.Message && msg.Message.ShipStaticData) || {};
     const dim = s.Dimension || {};
+    const prev = statics.get(mmsi) || {};
     statics.set(mmsi, {
-      name: cleanName(s.Name) || cleanName(meta.ShipName) || '',
-      type: Number(s.Type) || 0,
-      destination: cleanName(s.Destination),
-      length: (Number(dim.A) || 0) + (Number(dim.B) || 0),   // bow + stern, metres
+      name: cleanName(s.Name) || cleanName(meta.ShipName) || prev.name || '',
+      // Keep a previously learned type if this message omits it.
+      type: Number(s.Type) || prev.type || 0,
+      destination: cleanName(s.Destination) || prev.destination || '',
+      length: ((Number(dim.A) || 0) + (Number(dim.B) || 0)) || prev.length || 0,
+      seen: Date.now(),
     });
+    markDirty();
   }
 }
 
@@ -274,6 +330,7 @@ function scheduleReconnect(){
 function start(){
   if (started) return;
   started = true;
+  loadCache();
   connect();
   setInterval(prune, 60000).unref?.();
 }
@@ -309,6 +366,7 @@ function getBoats(limit = 12){
     connected,
     error: lastError,
     tracking: positions.size,
+    known: statics.size,
     frames: rawFrames,
     messages: messageCount,
     boats: out.slice(0, limit),
@@ -335,7 +393,8 @@ if (require.main === module) {
   start();
   setTimeout(() => {
     const snap = getBoats(20);
-    console.log(`\nConnected: ${snap.connected} | frames: ${snap.frames} | AIS messages: ${snap.messages} | vessels tracked: ${snap.tracking}`);
+    console.log(`\nConnected: ${snap.connected} | frames: ${snap.frames} | messages: ${snap.messages} | ` +
+                `in range: ${snap.tracking} | identities cached: ${snap.known}`);
     if (snap.error) console.log(`Last error: ${snap.error}`);
     if (!snap.boats.length) {
       if (!snap.frames) {
@@ -359,6 +418,7 @@ if (require.main === module) {
         );
       }
     }
+    if (cacheDirty) saveCache();
     process.exit(0);
   }, seconds * 1000);
 }
