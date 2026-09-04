@@ -200,6 +200,37 @@ ages after every launch. `prune()` therefore clears positions only, and
 deliberately leaves identities alone. After a few days' running the local fleet
 is essentially all known on startup.
 
+### Tide
+
+The waterline is the real one. Open-Meteo's **marine** endpoint
+(`marine-api.open-meteo.com`, `sea_level_height_msl`) gives sea level including
+tides and needs no API key, so unlike the boats this is fetched **from the
+page**, like the weather — meaning the tide works in every mode, including the
+plain double-clicked HTML file with no server at all.
+
+- Times are requested with `timezone=GMT` and parsed with an explicit `Z`.
+  Asking for `Europe/London` returns naive local timestamps that `Date.parse`
+  reads as the *viewer's* local time, which would silently shift the tide for
+  anyone outside the UK.
+- The hourly samples are interpolated (`sampleTide`) so the water moves
+  continuously instead of stepping once an hour. The forecast is refetched
+  every 30 minutes; the position within it is recomputed every minute.
+- Height is normalised against the whole 3-day window, so "high" and "low"
+  mean high and low for this run of tides rather than for one day — which
+  matters, because springs and neaps differ a lot.
+- Caveat from Open-Meteo's own docs: the model is 8 km resolution and
+  referenced to global mean sea level, not chart datum. Fine for deciding
+  where to draw foam; **not** navigational data.
+
+On screen, `HIGH_WATER` (192) is fixed — that's where the dry sand starts and
+it doesn't move. `shoreLine()` moves between 166 and 188 with the tide, so low
+water uncovers a broad band of wet sand and high water brings the sea almost to
+the dry sand. Boat depth is measured against the *current* waterline, not a
+fixed one, or a near vessel ends up beached on the sand at low water.
+
+He'll comment on it too — locally in speech bubbles, and via the chat bridge,
+which now receives the tide state alongside weather and location.
+
 ### The beach scene
 
 Bands: sky `0..108`, sea `108..178`, wet sand `178..190`, dry sand `190..240`.
@@ -255,7 +286,10 @@ server running. Those need a small `PORT_NAMES` table since there's no model to
 interpret codes, plus `SPOKEN_CATEGORY` — the AIS words are fine as data labels
 but stilted out loud, and nobody says "a passenger vessel" standing on a beach.
 `vesselCase()` softens the block capitals AIS broadcasts names in, which
-otherwise read as shouting in a speech bubble.
+otherwise read as shouting in a speech bubble — with two exceptions learned
+from real names on this coast: roman numerals stay upper ("Success III", not
+"Success Iii") and connecting words stay lower unless they lead ("Pride of the
+Tyne", not "Pride Of The Tyne").
 
 Implementation notes:
 - Two AIS message types are subscribed: `PositionReport` (position, speed,
@@ -348,8 +382,6 @@ Implementation notes:
 
 - Wider range of animated expressions/moods reacting to conversation tone.
 - Idle animations / small gestures (wave, nod) for extra life.
-- Give the beach a tide state (Open-Meteo has marine data) so the foam line
-  sits where the tide actually is.
 - A paid Apple Developer ID certificate, if the right-click-Open-once
   friction on a fresh install ever becomes a real problem (e.g. installing
   on another Mac) — would remove the Gatekeeper warning entirely.

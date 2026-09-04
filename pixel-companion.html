@@ -359,6 +359,8 @@
     boatsLive: false,     // true when these are real AIS positions
     boatsAt: Date.now(),  // when they were fetched, for between-update drift
     boatHits: [],         // hover targets, rebuilt every frame by drawBeach
+    tide: null,           // { norm, rising, metres } once the tide is known
+    tideSeries: null,     // hourly sea-level samples we interpolate between
   };
 
   const LOCATIONS = ['home','outside','cafe','work','bookstore','beach'];
@@ -411,7 +413,9 @@
     document.getElementById('weatherText').textContent = state.weather.ok
       ? `${weatherLabel(w)}, ${state.weather.temp}°C`
       : `Offline (${state.weather.errorMsg || 'unknown error'}) — assuming cloudy`;
-    document.getElementById('timeText').textContent = state.weather.isDay ? 'Daytime in Whitley Bay' : 'Night in Whitley Bay';
+    const when = state.weather.isDay ? 'Daytime in Whitley Bay' : 'Night in Whitley Bay';
+    const tw = tideWord();
+    document.getElementById('timeText').textContent = tw ? `${when} · ${tw}` : when;
     document.getElementById('locPill').textContent = state.location.toUpperCase();
   }
 
@@ -422,7 +426,7 @@
     cafe: ['One flat white, please.', 'Good spot to sit.', "This chair's comfy."],
     work: ['Just tidying a few things up.', 'Nearly done for today.', 'Focus mode.'],
     bookstore: ["Just browsing, honestly.", "Found something good.", "Quiet in here today.", "Smells like old paper in here."],
-    beach: ["Tide's on its way in.", "That's the Tyne ferry, that one.", "Could watch the boats all day.", "Sand in my shoes again.", "Something big heading for the Tyne."],
+    beach: ["That's the Tyne ferry, that one.", "Could watch the boats all day.", "Sand in my shoes again.", "Something big heading for the Tyne.", "Wind's coming right off the sea."],
     rainy: ["Glad I'm not out in that.", 'Listen to that rain.'],
     snowy: ["It's properly coming down.", 'Might build something small.'],
     foggy: ['Can barely see the front gate.'],
@@ -446,7 +450,15 @@
   // AIS names are broadcast in block capitals, which reads like shouting in a
   // speech bubble.
   function vesselCase(n){
-    return n.toLowerCase().replace(/(^|[\s'-])([a-z])/g, (m,a,b) => a + b.toUpperCase());
+    return n.toLowerCase()
+      .replace(/(^|[\s'-])([a-z])/g, (m,a,b) => a + b.toUpperCase())
+      // "Pride Of The Tyne" reads oddly; connecting words stay lower unless
+      // they start the name.
+      .replace(/\b(Of|The|And|An|In|On|At|To|For|Van|Der|Den|De|Du|La|Le)\b/g,
+               (m, _w, off) => off === 0 ? m : m.toLowerCase())
+      // Plenty of boats are named "SOMETHING II" or "III", and title-casing
+      // those to "Ii"/"Iii" looks like a typo. Put the numerals back.
+      .replace(/\b(I{1,3}|IV|VI{0,3}|IX|XI{0,2})\b/gi, (m) => m.toUpperCase());
   }
 
   // The AIS category words are fine as data labels but stilted out loud —
@@ -476,11 +488,27 @@
     return lines[Math.floor(Math.random() * lines.length)];
   }
 
+  // What the water's actually doing, rather than a fixed line about it.
+  function tideSpeech(){
+    const td = state.tide;
+    if (!td || state.location !== 'beach') return null;
+    if (td.norm > 0.86) return ["Tide's right in.", "That's about as far up as it comes."];
+    if (td.norm < 0.14) return ["Tide's right out.", 'Loads of sand today.'];
+    return td.rising
+      ? ["Tide's on its way in.", 'Water keeps creeping up on me.']
+      : ["Tide's going back out.", "Sea's on its way out again."];
+  }
+
   function pickSpeech(){
-    // On the beach he'd more often than not be remarking on a passing ship.
-    if (state.location === 'beach' && Math.random() < 0.6){
-      const line = boatSpeech();
-      if (line) return line;
+    if (state.location === 'beach'){
+      // On the beach he'd mostly be remarking on a passing ship, sometimes on
+      // the water itself.
+      if (Math.random() < 0.55){
+        const line = boatSpeech();
+        if (line) return line;
+      }
+      const tl = tideSpeech();
+      if (tl && Math.random() < 0.5) return tl[Math.floor(Math.random()*tl.length)];
     }
     const w = mapWeather(state.weather.code);
     const pool = [...(SPEECH[state.location]||[]), ...(SPEECH[w]||[])];
@@ -524,6 +552,81 @@
       updateStatusUI();
       showSpeech(pickSpeech());
     }, 2600);
+  }
+
+  // ---------- tide ----------
+  // Open-Meteo's marine endpoint gives sea level including tides, with no API
+  // key — so unlike the boats, this works in every mode, including the plain
+  // double-clicked HTML file. Times are requested in GMT and parsed with an
+  // explicit 'Z' so the reading doesn't shift with the viewer's own timezone.
+  const TIDE_URL = 'https://marine-api.open-meteo.com/v1/marine' +
+    '?latitude=55.0393&longitude=-1.4472&hourly=sea_level_height_msl' +
+    '&timezone=GMT&forecast_days=3';
+
+  async function fetchTide(){
+    try {
+      const res = await fetch(TIDE_URL);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const d = await res.json();
+      const times = d.hourly && d.hourly.time;
+      const vals = d.hourly && d.hourly.sea_level_height_msl;
+      if (!times || !vals) throw new Error('no sea level data');
+      const series = [];
+      for (let i = 0; i < times.length; i++){
+        if (typeof vals[i] === 'number') series.push({ t: Date.parse(times[i] + 'Z'), v: vals[i] });
+      }
+      if (series.length < 3) throw new Error('not enough samples');
+      state.tideSeries = series;
+      updateTide();
+    } catch (e) {
+      console.error('Tide fetch failed:', e);
+      state.tideSeries = null;
+      state.tide = null;
+      updateStatusUI();
+    }
+  }
+
+  // Interpolate between the hourly samples so the water moves continuously
+  // rather than stepping once an hour.
+  function sampleTide(at){
+    const s = state.tideSeries;
+    if (!s || s.length < 2) return null;
+    if (at <= s[0].t) return s[0].v;
+    if (at >= s[s.length-1].t) return s[s.length-1].v;
+    for (let i = 1; i < s.length; i++){
+      if (at <= s[i].t){
+        const a = s[i-1], b = s[i];
+        const f = (at - a.t) / (b.t - a.t);
+        return a.v + (b.v - a.v) * f;
+      }
+    }
+    return null;
+  }
+
+  function updateTide(){
+    const now = Date.now();
+    const v = sampleTide(now);
+    if (v === null){ state.tide = null; updateStatusUI(); return; }
+    // Normalise against the whole forecast window, so "high" and "low" mean
+    // high and low for this stretch of tides rather than for one day.
+    let lo = Infinity, hi = -Infinity;
+    for (const p of state.tideSeries){ if (p.v < lo) lo = p.v; if (p.v > hi) hi = p.v; }
+    const span = (hi - lo) || 1;
+    const ahead = sampleTide(now + 20*60*1000);
+    state.tide = {
+      metres: v,
+      norm: Math.max(0, Math.min(1, (v - lo) / span)),
+      rising: ahead !== null ? ahead > v : true,
+    };
+    updateStatusUI();
+  }
+
+  function tideWord(){
+    const td = state.tide;
+    if (!td) return null;
+    if (td.norm > 0.86) return 'high tide';
+    if (td.norm < 0.14) return 'low tide';
+    return td.rising ? 'tide coming in' : 'tide going out';
   }
 
   // ---------- boats ----------
@@ -990,7 +1093,15 @@
 
   // ---- beach ----
   // Layout bands: sky 0..108, sea 108..178, wet sand 178..190, dry sand 190..240.
-  const HORIZON = 108, SHORE = 178;
+  // The high-water mark is fixed — that's where the dry sand starts, and it
+  // doesn't move. The waterline itself does: at low tide it retreats up the
+  // screen and uncovers a wide band of wet sand, at high tide it comes almost
+  // all the way to the dry sand.
+  const HORIZON = 108, HIGH_WATER = 192;
+  function shoreLine(){
+    const n = state.tide ? state.tide.norm : 0.5;   // mid-tide if we don't know
+    return Math.round(166 + n * 22);                 // 166 out, 188 in
+  }
 
   // Where a real vessel sits on screen.
   //  - bearing maps left-to-right: you face east from the beach, so north (0)
@@ -1003,7 +1114,7 @@
   // and the run north past St Mary's at ~340-360 — so mapping a strict
   // half-circle piles every vessel onto the two edges of the canvas.
   const VIEW_ARC = 120;   // degrees either side of due east
-  function boatScreenPos(b){
+  function boatScreenPos(b, shoreY){
     let off = b.bearing - 90;
     if (off > 180) off -= 360;
     if (off < -180) off += 360;
@@ -1014,9 +1125,13 @@
     // range across the sea and lets genuinely distant ships compress toward
     // the horizon, which is how perspective behaves anyway.
     const f = Math.pow(Math.min(b.distanceKm, 16) / 16, 0.7);   // 0 = close, 1 = horizon
+    // The sea band shrinks and grows with the tide, so depth is measured
+    // against the current waterline rather than a fixed one — otherwise a
+    // near boat ends up beached on the sand at low water.
+    const band = Math.max(24, shoreY - HORIZON - 9);
     return {
       x: W/2 + fx * 140,
-      y: HORIZON + 3 + (1 - f) * 62,
+      y: HORIZON + 3 + (1 - f) * band,
       s: 0.5 + (1 - f) * 2.1,
     };
   }
@@ -1118,6 +1233,7 @@
   }
 
   function drawBeach(t, w, isDay){
+    const shoreY = shoreLine();
     skyGradient(0, 0, W, HORIZON, isDay);
     if (isDay){
       if (w === 'sunny') drawSun(t);
@@ -1127,10 +1243,10 @@
     }
 
     // Sea, darkening toward the shore so the horizon reads as distance.
-    const g = ctx.createLinearGradient(0, HORIZON, 0, SHORE);
+    const g = ctx.createLinearGradient(0, HORIZON, 0, shoreY);
     g.addColorStop(0, isDay ? PAL.seaDayFar : PAL.seaNightFar);
     g.addColorStop(1, isDay ? PAL.seaDay : PAL.seaNight);
-    ctx.fillStyle = g; ctx.fillRect(0, HORIZON, W, SHORE - HORIZON);
+    ctx.fillStyle = g; ctx.fillRect(0, HORIZON, W, shoreY - HORIZON);
     rect(0, HORIZON, W, 2, shade(isDay ? PAL.seaDayFar : PAL.seaNightFar, -0.10));
 
     // St Mary's Island, up the coast to the north — so, off to your left. Kept
@@ -1148,7 +1264,7 @@
     // Wave rows. Longer, thicker and faster toward the front for perspective.
     for (let row = 0; row < 9; row++){
       const ry = HORIZON + 6 + row * 7;
-      if (ry > SHORE - 4) break;
+      if (ry > shoreY - 4) break;
       const depth = row / 8;
       const len = 3 + depth * 9;
       const speed = 0.5 + depth * 1.6;
@@ -1167,7 +1283,7 @@
     const elapsed = (Date.now() - state.boatsAt) / 1000;
     const placed = [];
     for (const b of state.boats){
-      const pos = boatScreenPos(b);
+      const pos = boatScreenPos(b, shoreY);
       // Between server updates, let moving vessels carry on in the direction
       // they were last steaming, and everything ride the swell a little.
       const west = (b.course > 180 && b.course < 360);
@@ -1203,20 +1319,23 @@
       state.boatHits.push({ x: x - q.hw/2, y: y - q.hh + 4, w: q.hw, h: q.hh, boat: q.b });
     }
 
-    // Wet sand, then the foam edge riding up and down the beach.
-    rect(0, SHORE, W, 12, PAL.sandWet);
-    const tide = Math.sin(t / 22) * 3;
+    // Wet sand: whatever the retreating water has uncovered. Wide at low tide,
+    // barely a strip at high tide.
+    rect(0, shoreY, W, HIGH_WATER - shoreY, PAL.sandWet);
+    // Foam edge, with the individual waves still washing in and out on top of
+    // wherever the tide has put the waterline.
+    const wash = Math.sin(t / 22) * 3;
     ctx.fillStyle = PAL.seaFoam;
     for (let x = 0; x < W; x += 2){
-      const fy = SHORE + tide + Math.sin((x / 17) + t / 5) * 2;
+      const fy = shoreY + wash + Math.sin((x / 17) + t / 5) * 2;
       ctx.fillRect(x, Math.round(fy), 2, 3);
     }
 
-    // Dry sand.
-    rect(0, SHORE + 12, W, H - SHORE - 12, PAL.sand);
-    rect(0, SHORE + 12, W, 3, PAL.sandDark);
-    speckle(0, SHORE + 16, W, H - SHORE - 16, PAL.sandLight, 0.004, 3);
-    speckle(0, SHORE + 16, W, H - SHORE - 16, PAL.sandDark, 0.003, 9);
+    // Dry sand, starting at the fixed high-water mark.
+    rect(0, HIGH_WATER, W, H - HIGH_WATER, PAL.sand);
+    rect(0, HIGH_WATER, W, 3, PAL.sandDark);
+    speckle(0, HIGH_WATER + 4, W, H - HIGH_WATER - 4, PAL.sandLight, 0.004, 3);
+    speckle(0, HIGH_WATER + 4, W, H - HIGH_WATER - 4, PAL.sandDark, 0.003, 9);
     // A few pebbles and a bit of driftwood, fixed so they don't crawl about.
     [[38,214],[92,228],[203,206],[268,224],[141,236]].forEach(([px,py], i) => {
       rect(px, py, 3 + (i % 2), 2, PAL.pebble);
@@ -1326,6 +1445,9 @@
   setInterval(render, 180);
   fetchBoats();
   setInterval(fetchBoats, 45000);
+  fetchTide();
+  setInterval(fetchTide, 30*60*1000);   // the forecast itself rarely changes
+  setInterval(updateTide, 60*1000);     // but where we are within it does
   setInterval(()=> maybeRelocate(false), 45000);
   setInterval(fetchWeather, 30*60*1000);
 
@@ -1412,6 +1534,7 @@
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
+          tide: tideWord(),
           message: text,
           weather: weatherLabel(w).toLowerCase(),
           location: state.location,

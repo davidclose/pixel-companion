@@ -91,10 +91,12 @@ function describeBoats(){
     `see, so don't say you looked it up.`;
 }
 
-function buildSystemPrompt(weather, location, isDay) {
+function buildSystemPrompt(weather, location, isDay, tide) {
   return `You are a quiet, easygoing pixel-art companion character living in a small ` +
     `desktop app, based in Whitley Bay, UK. Right now it's ${weather} and ` +
-    `${isDay ? 'daytime' : 'night'}, and you're currently at "${location}". You share your ` +
+    `${isDay ? 'daytime' : 'night'}, and you're currently at "${location}". ` +
+    (tide ? `The tide is currently: ${tide}. Mention it only if it comes up naturally. ` : '') +
+    `You share your ` +
     `home with a bearded dragon. Reply in-character, first person, 1-3 short sentences, ` +
     `casual and warm, no roleplay asterisks or emoji spam. You're a real presence in the ` +
     `user's day, not an assistant — don't offer to help with tasks, just talk like a person would. ` +
@@ -118,12 +120,12 @@ function needsWebSearch(message) {
   return SEARCH_TRIGGERS.some((k) => lower.includes(k));
 }
 
-function askClaude(message, weather, location, isDay) {
+function askClaude(message, weather, location, isDay, tide) {
   return new Promise((resolve, reject) => {
     const wantsSearch = needsWebSearch(message);
     const args = [
       '-p', message,
-      '--system-prompt', buildSystemPrompt(weather, location, isDay),
+      '--system-prompt', buildSystemPrompt(weather, location, isDay, tide),
       '--output-format', 'json',
       '--no-session-persistence',
       '--tools', wantsSearch ? 'WebSearch' : '',
@@ -207,7 +209,8 @@ const server = http.createServer((req, res) => {
         const weather = typeof parsed.weather === 'string' ? parsed.weather : 'unknown';
         const location = typeof parsed.location === 'string' ? parsed.location : 'home';
         const isDay = parsed.isDay !== false;
-        const reply = await askClaude(message, weather, location, isDay);
+        const tide = typeof parsed.tide === 'string' ? parsed.tide.slice(0, 40) : null;
+        const reply = await askClaude(message, weather, location, isDay, tide);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ reply }));
       } catch (e) {
