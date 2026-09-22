@@ -52,6 +52,19 @@ function resolveClaudeBin(){
 }
 const CLAUDE_BIN = resolveClaudeBin();
 
+// Which model answers chat. Pinned rather than left to the CLI's default, so
+// his voice doesn't shift whenever Claude Code changes what it defaults to.
+// Override with PIXEL_COMPANION_MODEL (set it to an empty string to go back to
+// the CLI default). Opus 5.5 can't switch thinking off, so effort is the
+// latency lever: 1-3 sentence small talk runs at low; search questions, which
+// need a little judgement about what's worth mentioning, at medium.
+const CHAT_MODEL = process.env.PIXEL_COMPANION_MODEL ?? 'claude-opus-5-5';
+const EFFORT = { chat: 'low', search: 'medium' };
+// Flipped if the installed CLI turns out not to know CHAT_MODEL (an older
+// Claude Code predates newer models) — chat then carries on with the CLI's
+// default for the rest of this run instead of failing every message.
+let modelPinDisabled = false;
+
 // Run Claude Code from a neutral, empty directory so it doesn't pick up this
 // project's own CLAUDE.md / memory files as context for a chat reply.
 const NEUTRAL_CWD = path.join(os.tmpdir(), 'pixel-companion-chat-cwd');
@@ -120,42 +133,92 @@ function needsWebSearch(message) {
   return SEARCH_TRIGGERS.some((k) => lower.includes(k));
 }
 
-function askClaude(message, weather, location, isDay, tide) {
-  return new Promise((resolve, reject) => {
-    const wantsSearch = needsWebSearch(message);
-    const args = [
-      '-p', message,
-      '--system-prompt', buildSystemPrompt(weather, location, isDay, tide),
-      '--output-format', 'json',
-      '--no-session-persistence',
-      '--tools', wantsSearch ? 'WebSearch' : '',
-      ...(wantsSearch ? ['--allowedTools', 'WebSearch'] : []),
-    ];
-    execFile(CLAUDE_BIN, args, { cwd: NEUTRAL_CWD, timeout: wantsSearch ? 45000 : 25000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
-      if (err) {
-        if (err.code === 'ENOENT') {
-          reject(new Error("Can't find the `claude` command. Make sure Claude Code CLI is installed and on PATH in the terminal you started this server from."));
-        } else if (err.killed) {
-          reject(new Error('Claude Code took too long to reply.'));
-        } else {
-          reject(new Error(stderr?.trim() || err.message));
-        }
-        return;
-      }
-      let data;
-      try {
-        data = JSON.parse(stdout);
-      } catch {
-        reject(new Error('Could not parse the Claude Code response.'));
-        return;
-      }
-      if (data.is_error) {
-        reject(new Error(data.result || 'Claude Code returned an error.'));
-        return;
-      }
-      resolve((data.result || '...').trim());
-    });
+// Failures carry a `reason` the page can act on — "log in again" is a very
+// different message from "that took too long".
+function chatError(reason, message){
+  const e = new Error(message);
+  e.reason = reason;
+  return e;
+}
+
+// The CLI can print warning lines (e.g. `[claude-code:unrecognized_model] ...`)
+// on stdout ahead of the JSON result, so a plain JSON.parse(stdout) fails on
+// output that's actually fine. Take the last line that parses as an object.
+function parseCliJson(stdout){
+  const lines = String(stdout || '').trim().split('\n').reverse();
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t.startsWith('{')) continue;
+    try { return JSON.parse(t); } catch { /* keep looking */ }
+  }
+  return null;
+}
+
+function classifyFailure(text){
+  const t = String(text || '');
+  if (/authenticat|oauth|log ?in|logged ?in|credential|unauthori[sz]ed|\b401\b/i.test(t)) return 'auth';
+  if (/unrecognized_model|unknown model|model.*not (found|available|supported)/i.test(t)) return 'model';
+  return 'other';
+}
+
+function runClaude(args, timeoutMs){
+  return new Promise((resolve) => {
+    execFile(CLAUDE_BIN, args, { cwd: NEUTRAL_CWD, timeout: timeoutMs, maxBuffer: 1024 * 1024 },
+      (err, stdout, stderr) => resolve({ err, stdout: String(stdout || ''), stderr: String(stderr || '') }));
   });
+}
+
+async function askClaude(message, weather, location, isDay, tide) {
+  const wantsSearch = needsWebSearch(message);
+  const baseArgs = [
+    '-p', message,
+    '--system-prompt', buildSystemPrompt(weather, location, isDay, tide),
+    '--output-format', 'json',
+    '--no-session-persistence',
+    '--tools', wantsSearch ? 'WebSearch' : '',
+    ...(wantsSearch ? ['--allowedTools', 'WebSearch'] : []),
+  ];
+  const timeoutMs = wantsSearch ? 45000 : 25000;
+
+  const attempt = async (pinModel) => {
+    const args = pinModel
+      ? [...baseArgs, '--model', CHAT_MODEL, '--effort', wantsSearch ? EFFORT.search : EFFORT.chat]
+      : baseArgs;
+    const { err, stdout, stderr } = await runClaude(args, timeoutMs);
+
+    if (err && err.code === 'ENOENT') {
+      throw chatError('missing', "Can't find the `claude` command — is Claude Code installed?");
+    }
+    if (err && err.killed) {
+      throw chatError('timeout', 'Claude Code took too long to reply.');
+    }
+    // A failed call can still exit with a perfectly good JSON explanation on
+    // stdout (an expired login does exactly this), so read that before
+    // falling back to stderr.
+    const data = parseCliJson(stdout);
+    const wasUnknownModel = pinModel && /unrecognized_model/.test(stdout + stderr);
+    if (data && !data.is_error && typeof data.result === 'string' && data.result.trim()) {
+      return data.result.trim();
+    }
+    const detail = (data && data.result) || stderr.trim() || (err && err.message) || 'Claude Code returned an error.';
+    // The auth check wins over the model check: with both wrong, logging in is
+    // the thing the user actually has to do.
+    const reason = classifyFailure(detail);
+    throw chatError(reason === 'other' && wasUnknownModel ? 'model' : reason, detail);
+  };
+
+  const pin = Boolean(CHAT_MODEL) && !modelPinDisabled;
+  try {
+    return await attempt(pin);
+  } catch (e) {
+    if (pin && e.reason === 'model') {
+      modelPinDisabled = true;
+      console.warn(`This Claude Code CLI doesn't recognise "${CHAT_MODEL}" — using its default model instead. ` +
+        'Run `claude update` to get the newer models.');
+      return attempt(false);
+    }
+    throw e;
+  }
 }
 
 function serveStatic(req, res) {
@@ -178,14 +241,20 @@ function serveStatic(req, res) {
   });
 }
 
-const server = http.createServer((req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+// Only answer requests addressed to this machine's loopback by name. A page
+// can use DNS rebinding to point its own domain at 127.0.0.1 and slip past
+// the browser's same-origin rules, but it can't fake the Host header its
+// requests carry — so checking it is what stops a random website from using
+// your Claude subscription through this server.
+const ALLOWED_HOSTS = new Set([`localhost:${PORT}`, `127.0.0.1:${PORT}`]);
 
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204);
-    res.end();
+const server = http.createServer((req, res) => {
+  // No CORS headers, deliberately. The page is served from this same origin,
+  // so it never needs them — and `Access-Control-Allow-Origin: *` used to let
+  // any website you had open call /chat and read the replies.
+  if (!ALLOWED_HOSTS.has(String(req.headers.host || '').toLowerCase())) {
+    res.writeHead(403);
+    res.end('Forbidden');
     return;
   }
 
@@ -214,8 +283,9 @@ const server = http.createServer((req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ reply }));
       } catch (e) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: e.message }));
+        if (e.reason !== 'auth') console.error('Chat failed:', e.reason || 'other', '-', e.message);
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message, reason: e.reason || 'other' }));
       }
     });
     return;
@@ -238,7 +308,10 @@ const server = http.createServer((req, res) => {
   res.end();
 });
 
-server.listen(PORT, () => {
+// Loopback only. Listening on every interface (the default) made /chat
+// reachable by anyone on the same wifi — a café, a hotel — at this Mac's LAN
+// address, spending your Claude usage.
+server.listen(PORT, '127.0.0.1', () => {
   boats.start();   // no-op if no aisstream key is configured
   console.log(`Pixel Companion running at http://localhost:${PORT}`);
   console.log('Open that link in your browser (not the .html file directly) — real AI replies use your Claude Code login.');

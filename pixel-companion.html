@@ -1489,8 +1489,12 @@
     const log = document.getElementById('chatLog');
     const line = document.createElement('div');
     line.className = 'chatline ' + who;
-    const label = who === 'you' ? 'YOU' : 'HIM';
-    line.innerHTML = `<span class="who">${label}</span>${text.replace(/</g,'&lt;')}`;
+    // System notices aren't him talking, so they don't wear his label.
+    const label = who === 'you' ? 'YOU' : who === 'system' ? 'NOTE' : 'HIM';
+    const tag = document.createElement('span');
+    tag.className = 'who';
+    tag.textContent = label;
+    line.append(tag, document.createTextNode(text));   // text, never markup
     log.appendChild(line);
     log.scrollTop = log.scrollHeight;
   }
@@ -1519,7 +1523,8 @@
   }
 
   const BRIDGE_URL = '/chat'; // relative: same-origin once served by companion-server.js
-  state.bridgeAvailable = null; // null = untested, true/false once known
+  state.bridgeProblem = null;   // last chat-bridge failure reason we told the user about
+  state.bridgeRetryAt = 0;      // after a failure, when to try the bridge again
 
   async function bridgeReply(text){
     const w = mapWeather(state.weather.code);
@@ -1544,7 +1549,9 @@
       });
       if (!res.ok){
         const body = await res.json().catch(()=>({}));
-        throw new Error(body?.error || `HTTP ${res.status}`);
+        const e = new Error(body?.error || `HTTP ${res.status}`);
+        e.reason = body?.reason || 'other';
+        throw e;
       }
       const data = await res.json();
       return data.reply || null;
@@ -1552,6 +1559,15 @@
       clearTimeout(timer);
     }
   }
+
+  // Said once per kind of problem, so a run of failures doesn't flood the log.
+  const BRIDGE_PROBLEMS = {
+    auth: "Real chat is paused — Claude Code isn't logged in. Open Terminal, run `claude` and log in; he'll pick it back up by himself. Offline replies till then.",
+    missing: "Can't find Claude Code on this Mac, so he's on offline replies.",
+    timeout: 'Claude took too long with that one — offline reply instead.',
+    offline: 'No chat bridge running — offline replies. (Open him via the app, or run `node companion-server.js`, for real replies.)',
+    other: 'The chat bridge hit a snag — offline replies for a minute.',
+  };
 
   async function sendChat(){
     const input = document.getElementById('chatInput');
@@ -1562,21 +1578,27 @@
 
     // Try the local Claude Code chat bridge first (companion-server.js); if it's
     // not running or errors, fall back to the fully offline keyword replies.
-    const wasAvailable = state.bridgeAvailable !== false;
-    if (wasAvailable){
+    // A failure only pauses the bridge for a minute rather than switching it
+    // off for good — this runs all day in the tray, and an expired login or a
+    // slow reply shouldn't mean canned answers until the next restart.
+    if (Date.now() >= (state.bridgeRetryAt || 0)){
       try{
         const reply = await bridgeReply(text);
         if (reply){
-          state.bridgeAvailable = true;
+          if (state.bridgeProblem) appendChatLine('system', 'Real replies are back.');
+          state.bridgeProblem = null;
+          state.bridgeRetryAt = 0;
           appendChatLine('him', reply);
           showSpeech(reply.length > 70 ? reply.slice(0, 67) + '…' : reply);
           return;
         }
       }catch(e){
-        if (wasAvailable){
-          appendChatLine('system', "Couldn't reach the local chat bridge — using offline replies. (Run `node companion-server.js` for real AI replies.)");
-        }
-        state.bridgeAvailable = false;
+        // A fetch that never got an HTTP response means no server at all
+        // (e.g. opened as a plain file), not a server that answered with an error.
+        const reason = e.reason || (e.name === 'AbortError' ? 'timeout' : 'offline');
+        if (reason !== state.bridgeProblem) appendChatLine('system', BRIDGE_PROBLEMS[reason] || BRIDGE_PROBLEMS.other);
+        state.bridgeProblem = reason;
+        state.bridgeRetryAt = Date.now() + (reason === 'offline' ? 5*60*1000 : 60*1000);
       }
     }
 

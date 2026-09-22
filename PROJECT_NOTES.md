@@ -135,17 +135,43 @@ then falls back automatically:
 
 1. **POST `/chat`** to the same origin (relative URL, so it only resolves
    when served via `companion-server.js`, not when opened as a raw file).
-2. On any failure — server not running, timeout, network error — falls back
+2. On any failure — server not running, timeout, expired login — falls back
    to `localReply()`, a keyword-matched canned-reply table (`CHAT_REPLIES`)
    layered over the existing weather/location `SPEECH` pool used for idle
-   speech bubbles. A one-time system message notes the fallback (tracked via
-   `state.bridgeAvailable` so it doesn't repeat every message).
+   speech bubbles.
+
+Failures carry a **reason** (`auth`, `missing`, `timeout`, `offline`, `other`)
+and the chat log shows a NOTE saying what's actually wrong, once per kind of
+problem (`BRIDGE_PROBLEMS`). An expired Claude Code login used to show up as
+"couldn't reach the chat bridge", which sent you looking in the wrong place.
+A failure also only **pauses** the bridge — for a minute, or five if there's
+no server at all — rather than switching it off for the rest of the session.
+That mattered: this runs all day in the tray, and before, one timeout or login
+lapse meant canned replies until the next restart, even after logging back in.
 
 On the server side, `askClaude()` runs:
 ```
 claude -p "<message>" --system-prompt "<character persona>" \
-  --output-format json --no-session-persistence --tools "" [--allowedTools "WebSearch"]
+  --output-format json --no-session-persistence --tools "" [--allowedTools "WebSearch"] \
+  --model claude-opus-5-5 --effort low|medium
 ```
+
+**The model is pinned** (`CHAT_MODEL`, default Claude Opus 5.5), so his voice
+doesn't drift whenever Claude Code changes its own default. Override with
+`PIXEL_COMPANION_MODEL`; an empty string means "whatever the CLI defaults to".
+Opus 5.5 can't switch thinking off, so effort is the latency lever: `low` for
+small talk, `medium` for search-triggered questions. Those are starting
+points, not measured values — tune them once real replies can be timed.
+
+An older CLI may not know the pinned model. It then prints
+`[claude-code:unrecognized_model] ...` on stdout **ahead of** the JSON result.
+That broke the old plain `JSON.parse(stdout)` even when the reply itself was
+fine, so `parseCliJson()` now takes the last line that parses as an object.
+If the pinned call fails that way, the server retries once on the CLI's
+default and stops pinning for the rest of that run, logging a single warning
+to run `claude update`. Verified against a stand-in CLI that mimics that
+output: the first message falls back and replies, and later ones skip
+straight to the default with no wasted call.
 from a neutral temp directory (so it doesn't pick up this project's own
 `CLAUDE.md`/memory as context). Because `claude` here is authenticated via
 whatever you're logged into Claude Code with — your subscription, not
@@ -309,6 +335,22 @@ Implementation notes:
   and the scene falls back to invented boats.
 
 ## Known gotchas
+
+- **The server only listens on loopback (`127.0.0.1`) and checks the Host
+  header.** Before, it listened on every interface and sent
+  `Access-Control-Allow-Origin: *`. Anyone on the same wifi could reach
+  `/chat` at this Mac's LAN address, and any website you had open could call
+  it from your browser and read the replies. The CLI runs with no tools (web
+  search at most), so this never exposed files, but it did let others spend
+  your Claude usage. The page is same-origin, so it needs no CORS headers at
+  all. The Host allowlist (`localhost:PORT`, `127.0.0.1:PORT`) also blocks
+  DNS-rebinding pages that point their own domain at 127.0.0.1. If you ever
+  deliberately want it reachable from another device, that's a design change,
+  not a one-line bind address edit — it would need authentication first.
+- **Chat needs Claude Code logged in.** `claude auth status` shows
+  `loggedIn`. When the login lapses, the chat log says so; run `claude` in
+  Terminal and log in, and he picks real replies back up within a minute
+  without restarting.
 
 - **Open the app via `http://localhost:8934/`, not the `.html` file**, if
   you want real chat. Safari (and possibly other browsers) block `fetch()`

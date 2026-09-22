@@ -30,7 +30,9 @@ function createWindow(){
       nodeIntegration: false,
     },
   });
-  win.loadURL(`http://localhost:${PORT}/`);
+  // 127.0.0.1 rather than localhost: the server listens on IPv4 loopback only,
+  // and naming it avoids any dependence on how `localhost` resolves.
+  win.loadURL(`http://127.0.0.1:${PORT}/`);
 
   // Keep the app alive in the tray instead of quitting when the window closes.
   win.on('close', (e) => {
