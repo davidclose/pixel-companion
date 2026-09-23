@@ -388,7 +388,12 @@
   // ---------- weather fetch ----------
   async function fetchWeather(){
     document.getElementById('weatherText').textContent = 'Checking weather…';
-    const url = 'https://api.open-meteo.com/v1/forecast?latitude=55.0393&longitude=-1.4472&current_weather=true&timezone=Europe/London';
+    // GMT, not Europe/London: the daily sunrise/sunset come back as bare
+    // timestamps, and a local-time zone would make Date.parse read them in the
+    // viewer's own zone. past_days=1 covers the small hours, when the relevant
+    // sunset was yesterday's.
+    const url = 'https://api.open-meteo.com/v1/forecast?latitude=55.0393&longitude=-1.4472' +
+      '&current_weather=true&daily=sunrise,sunset&past_days=1&forecast_days=2&timezone=GMT';
     try{
       const res = await fetch(url);
       if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -396,6 +401,13 @@
       const cw = data.current_weather;
       if (!cw) throw new Error('No current_weather in response');
       state.weather = { code: cw.weathercode, temp: Math.round(cw.temperature), isDay: cw.is_day, ok: true };
+      const dl = data.daily;
+      if (dl && Array.isArray(dl.sunrise) && Array.isArray(dl.sunset)){
+        state.sunTimes = {
+          rise: dl.sunrise.map(v => Date.parse(v + 'Z')).filter(Number.isFinite),
+          set:  dl.sunset.map(v => Date.parse(v + 'Z')).filter(Number.isFinite),
+        };
+      }
       state.weather.errorMsg = null;
       updateStatusUI();
       maybeRelocate(true);
@@ -409,11 +421,12 @@
 
   function updateStatusUI(){
     const w = mapWeather(state.weather.code);
-    document.getElementById('weatherIcon').textContent = weatherIcon(w, state.weather.isDay);
+    const sky = skyState();
+    document.getElementById('weatherIcon').textContent = weatherIcon(w, sky.night < 0.5);
     document.getElementById('weatherText').textContent = state.weather.ok
       ? `${weatherLabel(w)}, ${state.weather.temp}°C`
       : `Offline (${state.weather.errorMsg || 'unknown error'}) — assuming cloudy`;
-    const when = state.weather.isDay ? 'Daytime in Whitley Bay' : 'Night in Whitley Bay';
+    const when = { dawn: 'Dawn', dusk: 'Dusk', day: 'Daytime', night: 'Night' }[sky.phase] + ' in Whitley Bay';
     const tw = tideWord();
     document.getElementById('timeText').textContent = tw ? `${when} · ${tw}` : when;
     document.getElementById('locPill').textContent = state.location.toUpperCase();
@@ -431,6 +444,7 @@
     snowy: ["It's properly coming down.", 'Might build something small.'],
     foggy: ['Can barely see the front gate.'],
     sunny: ['Lovely bit of sun.'],
+    clearNight: ['Clear night out there.', 'Nice and still tonight.'],
   };
 
   // AIS destinations are terse port codes. Translate the handful that actually
@@ -499,7 +513,24 @@
       : ["Tide's going back out.", "Sea's on its way out again."];
   }
 
+  // Remarks on the sky itself, outdoors: a sunset, an early start, the moon.
+  function skySpeech(){
+    if (state.location !== 'outside' && state.location !== 'beach') return null;
+    const s = skyState(), w = mapWeather(state.weather.code);
+    const clearish = w === 'sunny' || w === 'cloudy';
+    if (s.phase === 'dusk' && clearish) return ['Look at that sky.', "Sun's nearly down.", 'Proper sunset, that.'];
+    if (s.phase === 'dawn' && clearish) return ['Up with the sun for once.', 'Lovely light this early.'];
+    if (s.phase === 'night' && w === 'sunny'){
+      const lit = moonLit(moonPhase());
+      if (lit > 0.95) return ['Full moon tonight.', 'Bright out, with that moon.'];
+      if (lit < 0.05) return ['No moon at all tonight. Look at those stars.'];
+    }
+    return null;
+  }
+
   function pickSpeech(){
+    const sl = skySpeech();
+    if (sl && Math.random() < 0.4) return sl[Math.floor(Math.random() * sl.length)];
     if (state.location === 'beach'){
       // On the beach he'd mostly be remarking on a passing ship, sometimes on
       // the water itself.
@@ -511,7 +542,9 @@
       if (tl && Math.random() < 0.5) return tl[Math.floor(Math.random()*tl.length)];
     }
     const w = mapWeather(state.weather.code);
-    const pool = [...(SPEECH[state.location]||[]), ...(SPEECH[w]||[])];
+    // Open-Meteo calls a clear night "sunny" too; he shouldn't praise the sun at 10pm.
+    const wKey = (w === 'sunny' && !isDaytime()) ? 'clearNight' : w;
+    const pool = [...(SPEECH[state.location]||[]), ...(SPEECH[wKey]||[])];
     return pool[Math.floor(Math.random()*pool.length)];
   }
 
@@ -525,7 +558,7 @@
 
   function preferredLocations(){
     const w = mapWeather(state.weather.code);
-    if (!state.weather.isDay) return ['home'];
+    if (!isDaytime()) return ['home'];
     if (w === 'rainy' || w === 'snowy') return ['home','cafe','bookstore','home','bookstore'];
     if (w === 'foggy') return ['home','cafe','bookstore'];
     if (w === 'sunny') return ['outside','beach','cafe','beach','work','outside'];
@@ -666,36 +699,177 @@
     }
   }
 
-  // ---------- drawing helpers ----------
-  function skyGradient(x,y,w,h,isDay){
-    const g = ctx.createLinearGradient(0,y,0,y+h);
-    if (!isDay){ g.addColorStop(0, PAL.nightSky1); g.addColorStop(1, PAL.nightSky2); }
-    else { g.addColorStop(0, PAL.daySky1); g.addColorStop(1, PAL.daySky2); }
-    ctx.fillStyle = g; ctx.fillRect(x,y,w,h);
+  // ---------- time of day ----------
+  // Day and night used to be a switch: Open-Meteo's is_day, refreshed every
+  // 30 minutes, flipped the whole scene at once and could lag sunset by up
+  // to half an hour. Now everything runs from the clock against the real
+  // sunrise and sunset, so the light fades through dusk and dawn.
+  //   night: 0 full day .. 1 full night
+  //   glow:  how strongly the sky is sunrise/sunset coloured (peaks at the event)
+  //   lift:  sun height, 0 on the horizon .. 1 its usual place
+  const MIN = 60 * 1000;
+  const clamp01 = (v) => Math.max(0, Math.min(1, v));
+
+  function skyState(now = Date.now()){
+    const st = state.sunTimes;
+    if (!st || !(st.rise.length + st.set.length)){
+      const n = state.weather.isDay ? 0 : 1;        // no sun times yet: old behaviour
+      return { night: n, glow: 0, lift: 1 - n, phase: n ? 'night' : 'day', event: null, sinceEvent: 0 };
+    }
+    let best = null;
+    for (const t of st.rise) if (!best || Math.abs(now - t) < Math.abs(now - best.t)) best = { t, kind: 'rise' };
+    for (const t of st.set)  if (!best || Math.abs(now - t) < Math.abs(now - best.t)) best = { t, kind: 'set' };
+    const d = now - best.t;                           // negative before the event
+    let night, lift;
+    if (best.kind === 'set'){
+      night = clamp01((d + 15*MIN) / (60*MIN));       // darkening from 15 min before to 45 after
+      lift  = clamp01(-d / (70*MIN));
+    } else {
+      night = clamp01(1 - (d + 45*MIN) / (60*MIN));   // lightening from 45 min before to 15 after
+      lift  = clamp01(d / (70*MIN));
+    }
+    const glow = clamp01(1 - Math.abs(d) / (55*MIN));
+    const phase = glow > 0.35 ? (best.kind === 'set' ? 'dusk' : 'dawn') : (night >= 0.5 ? 'night' : 'day');
+    return { night, glow, lift, phase, event: best.kind, sinceEvent: d };
   }
 
-  function drawStars(t){
+  // What the current frame is drawn with; set once at the top of render().
+  let curSky = skyState();
+  const isDaytime = () => skyState().night < 0.5;
+  // Lamps, windows and ships' lights come on part-way into dusk.
+  const lampsOn = () => curSky.night > 0.25;
+
+  // Moon phase from the mean synodic month, counted from a known new moon.
+  // Checked against five eclipse dates: within about 16 hours every time,
+  // well under a pixel's difference at this size. 0 new, 0.5 full.
+  const SYNODIC_DAYS = 29.530588853;
+  const KNOWN_NEW_MOON = Date.UTC(2000, 0, 6, 18, 14);
+  function moonPhase(now = Date.now()){
+    return (((now - KNOWN_NEW_MOON) / 86400000 / SYNODIC_DAYS) % 1 + 1) % 1;
+  }
+  const moonLit = (p) => (1 - Math.cos(2 * Math.PI * p)) / 2;   // fraction illuminated
+  function moonName(p){
+    if (p < 0.03 || p > 0.97) return 'new moon';
+    if (p < 0.22) return 'waxing crescent';
+    if (p < 0.28) return 'first quarter moon';
+    if (p < 0.47) return 'waxing gibbous moon';
+    if (p < 0.53) return 'full moon';
+    if (p < 0.72) return 'waning gibbous moon';
+    if (p < 0.78) return 'last quarter moon';
+    return 'waning crescent';
+  }
+
+  function mix(a, b, t){
+    t = clamp01(t);
+    const pa = [1,3,5].map(i => parseInt(a.substr(i,2),16));
+    const pb = [1,3,5].map(i => parseInt(b.substr(i,2),16));
+    return '#' + pa.map((v,i) => Math.round(v + (pb[i]-v)*t).toString(16).padStart(2,'0')).join('');
+  }
+
+  // ---------- drawing helpers ----------
+  // Day sky, with night faded in over it and sunset colour over that, so the
+  // sky (and the view through every window) passes through dusk properly.
+  function skyGradient(x,y,w,h){
+    const s = curSky;
+    const g = ctx.createLinearGradient(0,y,0,y+h);
+    g.addColorStop(0, PAL.daySky1); g.addColorStop(1, PAL.daySky2);
+    ctx.fillStyle = g; ctx.fillRect(x,y,w,h);
+    if (s.night > 0){
+      const n = ctx.createLinearGradient(0,y,0,y+h);
+      n.addColorStop(0, PAL.nightSky1); n.addColorStop(1, PAL.nightSky2);
+      ctx.globalAlpha = s.night; ctx.fillStyle = n; ctx.fillRect(x,y,w,h);
+    }
+    if (s.glow > 0){
+      const d = ctx.createLinearGradient(0,y,0,y+h);
+      d.addColorStop(0,    'rgba(110,80,160,0)');
+      d.addColorStop(0.45, 'rgba(206,112,150,0.45)');
+      d.addColorStop(1,    'rgba(255,164,92,0.85)');
+      ctx.globalAlpha = s.glow * (1 - s.night * 0.6);   // fades as it gets properly dark
+      ctx.fillStyle = d; ctx.fillRect(x,y,w,h);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawStars(t, alpha){
+    ctx.globalAlpha = alpha;
     for(let i=0;i<28;i++){
       const sx = (i*61 + 23) % W;
       const sy = (i*37 + 9) % 110;
       if ((i + Math.floor(t/6)) % 5 === 0) continue;
       rect(sx, sy, 2, 2, PAL.star);
     }
+    ctx.globalAlpha = 1;
   }
 
-  function drawSun(t){
-    blob(256, 44, 20, PAL.sun);
+  // The sun sits in its usual place by day and sinks to the horizon (clipped
+  // there) around sunset, reddening; at dawn it comes up the same way.
+  function drawSun(horizonY, facesEast){
+    const s = curSky;
+    if (s.event === 'set'  && s.sinceEvent > 3*MIN) return;    // gone down
+    if (s.event === 'rise' && s.sinceEvent < -3*MIN) return;   // not up yet
+    // From the beach you face east over the sea: the sun comes up out of it
+    // at dawn, but in the evening it's setting behind you.
+    if (facesEast && s.event === 'set' && s.lift < 1) return;
+    const y = Math.round(horizonY - 4 - s.lift * (horizonY - 4 - 44));
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, 0, W, horizonY); ctx.clip();
+    blob(256, y, 20, mix(PAL.sun, '#ff7b3a', s.glow * 0.9));
+    ctx.restore();
+  }
+
+  // Pixel moon in its real phase: each row lit from the terminator to the
+  // limb, the dark side faintly visible, a few craters on the lit part.
+  const MOON_X = 262, MOON_Y = 36, MOON_R = 9;
+  function drawMoon(p){
+    const k = Math.cos(2 * Math.PI * p), waxing = p < 0.5;
+    const craters = [[-3,-2],[2,3],[3,-4],[-1,4],[-4,2]];
+    for (let yy = -MOON_R; yy < MOON_R; yy++){
+      const hw = Math.sqrt(MOON_R*MOON_R - (yy+0.5)*(yy+0.5));
+      const x0 = Math.round(MOON_X - hw), x1 = Math.round(MOON_X + hw);
+      rect(x0, MOON_Y + yy, x1 - x0, 1, '#2d3548');
+      const l0 = waxing ? Math.round(MOON_X + k*hw) : x0;
+      const l1 = waxing ? x1 : Math.round(MOON_X - k*hw);
+      if (l1 > l0){
+        rect(l0, MOON_Y + yy, l1 - l0, 1, '#f1ecd6');
+        for (const [cx, cy] of craters){
+          const px = MOON_X + cx;
+          if (cy === yy && px >= l0 && px < l1) rect(px, MOON_Y + yy, 2, 1, '#d4ccb0');
+        }
+      }
+    }
+  }
+
+  function cloudColour(){
+    const c = mix(PAL.cloud, '#4a5468', curSky.night);   // slate grey at night
+    return mix(c, '#f3a58e', curSky.glow * 0.55 * (1 - curSky.night * 0.5));
   }
 
   function drawClouds(t, dense){
+    const col = cloudColour();
     const offsets = dense ? [0, 80, 180] : [20, 200];
     offsets.forEach((o,i)=>{
       const x = ((t*0.3 + o) % (W+80)) - 40;
       const y = 28 + i*20;
-      blob(x, y, 10, PAL.cloud, false);
-      blob(x+16, y-4, 8, PAL.cloud, false);
-      blob(x-14, y+4, 9, PAL.cloud, false);
+      blob(x, y, 10, col, false);
+      blob(x+16, y-4, 8, col, false);
+      blob(x-14, y+4, 9, col, false);
     });
+  }
+
+  // Everything above an outdoor horizon, for any time of day. Stars and moon
+  // only where the sky is actually clear: a rainy night used to show a sky
+  // full of stars.
+  function drawSkyDetails(t, w, horizonY, facesEast){
+    const s = curSky, clear = w === 'sunny', cloudy = w === 'cloudy';
+    const starA = s.night * (clear ? 1 : cloudy ? 0.35 : 0);
+    if (starA > 0.03) drawStars(t, starA);
+    const p = moonPhase();
+    if (s.night > 0.15 && moonLit(p) > 0.03 && (clear || cloudy)){
+      drawMoon(p);                                   // behind any clouds
+      if (clear && lampsOn()) addLight(MOON_X, MOON_Y, 30, '200,215,255', 0.18 * moonLit(p), () => drawMoon(p));
+    }
+    if (clear && s.night < 0.6) drawSun(horizonY, facesEast);
+    if (!clear) drawClouds(t, !cloudy);
   }
 
   function drawRain(t){
@@ -748,7 +922,7 @@
   // he was drawn, so every lamp and window was dimmed along with everything
   // else while he stayed at full daylight brightness, looking pasted on. Now
   // outdoor scenes register their light sources as they draw; once he's on the
-  // canvas, finishOutdoor() darkens everything, him included, then paints the
+  // canvas, finishScene() darkens everything, him included, then paints the
   // lights back on top so they glow into the dark around them.
   const lights = [];
   function addLight(x, y, r, rgb, alpha, redraw){ lights.push({ x, y, r, rgb, alpha, redraw }); }
@@ -774,38 +948,51 @@
     });
   }
 
-  function finishOutdoor(t, w, isDay){
-    if (!isDay){
-      rect(0, 0, W, H, NIGHT_SHADE);
+  // Runs after he's drawn, for every scene. Outdoors, golden-hour light
+  // warms everything around sunset and sunrise. As it gets dark the room or
+  // street is shaded, him included (indoors more gently: the lights are on),
+  // then the lights are painted back in, glowing. A light that would redraw
+  // on top of him is skipped, so a lamp never paints over his face.
+  function finishScene(t, w, outdoor){
+    const n = curSky.night;
+    if (outdoor && curSky.glow > 0.02){
+      rect(0, 0, W, H, 'rgba(255,150,80,' + (0.12 * curSky.glow * (1 - n)).toFixed(3) + ')');
+    }
+    if (n > 0.01){
+      rect(0, 0, W, H, 'rgba(8,12,26,' + ((outdoor ? 0.46 : 0.26) * n).toFixed(3) + ')');
+      const k = Math.min(1, n / 0.6);               // lights brighten as it darkens
       ctx.save();
-      ctx.globalCompositeOperation = 'lighter';   // light adds, never darkens
-      for (const L of lights) if (L.r) glow(L.x, L.y, L.r, L.rgb, L.alpha);
+      ctx.globalCompositeOperation = 'lighter';     // light adds, never darkens
+      for (const L of lights) if (L.r) glow(L.x, L.y, L.r, L.rgb, L.alpha * k);
       ctx.restore();
-      for (const L of lights) if (L.redraw) L.redraw();
+      for (const L of lights){
+        if (!L.redraw) continue;
+        const c = state.charBox;
+        if (c && L.x >= c.x && L.x <= c.x + c.w && L.y >= c.y && L.y <= c.y + c.h) continue;
+        L.redraw();
+      }
     }
     lights.length = 0;
-    // Weather falls in front of everything, lights included.
-    if (w === 'rainy') drawRain(t);
-    if (w === 'snowy') drawSnow(t);
-    if (w === 'foggy') drawFogOverlay();
+    if (outdoor){                                    // weather falls in front of it all
+      if (w === 'rainy') drawRain(t);
+      if (w === 'snowy') drawSnow(t);
+      if (w === 'foggy') drawFogOverlay();
+    }
   }
+
 
   // ---- outside ----
   // Four buildings share one row at 320 wide. The spacing is hand-tuned so the
   // roof overhangs (drawTriRoof spans x-8 .. x+w+8) never collide, and the path
   // sits exactly in the gap between the bookstore and cafe roofs.
   function drawOutside(t, w, isDay){
-    skyGradient(0,0,W,144,isDay);
-    if (isDay){
-      if (w==='sunny') drawSun(t);
-      if (w==='cloudy' || w==='rainy' || w==='snowy' || w==='foggy') drawClouds(t, w!=='cloudy');
-      // distant hills for depth
-      ctx.fillStyle = 'rgba(92,138,79,0.5)';
-      ctx.beginPath(); ctx.arc(40,144,44,Math.PI,0); ctx.fill();
-      ctx.beginPath(); ctx.arc(300,144,52,Math.PI,0); ctx.fill();
-    } else {
-      drawStars(t);
-    }
+    skyGradient(0,0,W,144);
+    drawSkyDetails(t, w, 144, false);
+    // distant hills for depth (always there now; the night shade darkens them,
+    // rather than them vanishing at dusk)
+    ctx.fillStyle = 'rgba(92,138,79,0.5)';
+    ctx.beginPath(); ctx.arc(40,144,44,Math.PI,0); ctx.fill();
+    ctx.beginPath(); ctx.arc(300,144,52,Math.PI,0); ctx.fill();
 
     // ground with grass texture
     rect(0,144,W,H-144, PAL.ground);
@@ -822,15 +1009,15 @@
     block(6,96,54,54, PAL.houseWall, 3);
     drawTriRoof(6,96,54, PAL.houseRoof);
     block(12,72,8,16,'#5c4a3a',2); // chimney
-    if (isDay && (w==='sunny' || w==='cloudy')){
+    if (curSky.night < 0.5 && (w==='sunny' || w==='cloudy')){
       ctx.fillStyle = PAL.smoke;
       const puff = (t*0.4)%40;
       ctx.beginPath(); ctx.arc(16, 68-puff*0.5, 4+puff*0.12, 0, Math.PI*2); ctx.fill();
     }
     block(13,104,12,12, PAL.windowGlass, 2);
-    if (!isDay) litWindow(13,104,12,12);
+    if (lampsOn()) litWindow(13,104,12,12);
     block(41,104,12,12, PAL.windowGlass, 2);
-    if (!isDay) litWindow(41,104,12,12);
+    if (lampsOn()) litWindow(41,104,12,12);
     block(26,120,18,30, PAL.doorBrown, 2);
     rect(29,136,3,3,'#e0b13b'); // doorknob
     // window flower box
@@ -842,7 +1029,7 @@
     drawTriRoof(80,92,50, PAL.bookRoofExt);
     block(84,80,42,10, PAL.bookSign, 2);
     block(86,102,14,14, PAL.windowGlass, 2);
-    if (!isDay) litWindow(86,102,14,14);
+    if (lampsOn()) litWindow(86,102,14,14);
     block(104,120,18,30, PAL.doorBrown, 2);
 
     // cafe
@@ -850,18 +1037,18 @@
     drawTriRoof(188,88,54, PAL.cafeRoof);
     block(194,80,42,10, PAL.cafeSign, 2);
     block(194,100,12,12, PAL.windowGlass, 2);
-    if (!isDay) litWindow(194,100,12,12);
+    if (lampsOn()) litWindow(194,100,12,12);
     block(226,100,12,12, PAL.windowGlass, 2);
-    if (!isDay) litWindow(226,100,12,12);
+    if (lampsOn()) litWindow(226,100,12,12);
     block(206,120,24,30, PAL.doorBrown, 2);
 
     // work (far right)
     block(258,80,46,70, PAL.workWall, 3);
     rect(256,78,50,6, PAL.workRoof);
     block(264,92,10,10, PAL.windowGlass, 2);
-    if (!isDay) litWindow(264,92,10,10);
+    if (lampsOn()) litWindow(264,92,10,10);
     block(286,92,10,10, PAL.windowGlass, 2);
-    if (!isDay) litWindow(286,92,10,10);
+    if (lampsOn()) litWindow(286,92,10,10);
     block(270,124,22,26, PAL.doorBrown, 2);
 
     // low fence on the grass in front of the house
@@ -893,20 +1080,20 @@
     // out of nowhere at dusk; now it's always there and simply lights up.
     rect(182,116,4,34,'#2a2320');
     rect(179,106,10,3,'#2a2320');                 // cap
-    rect(180,109,8,7, isDay ? '#8a8f86' : '#3a3530');
-    if (!isDay){
+    rect(180,109,8,7, lampsOn() ? '#3a3530' : '#8a8f86');
+    if (lampsOn()){
       addLight(184, 112, 26, '255,206,130', 0.50, () => {
         rect(180,109,8,7,'#ffd88a'); rect(181,110,6,2,'#fff1c9');
       });
       addLight(178, 162, 34, '255,190,110', 0.20); // the pool it throws on the path
     }
-    // Night shading and weather now happen in finishOutdoor(), after he's drawn.
+    // Night shading and weather happen in finishScene(), after he's drawn.
   }
 
   function drawWindowWeather(wx,wy,ww,wh,w,isDay,t){
     ctx.save();
     ctx.beginPath(); ctx.rect(wx,wy,ww,wh); ctx.clip();
-    skyGradient(wx,wy,ww,wh,isDay);
+    skyGradient(wx,wy,ww,wh);
     if (w==='rainy') drawRain(t);
     if (w==='snowy') drawSnow(t);
     if (w==='foggy') rect(wx,wy,ww,wh,PAL.fog);
@@ -959,8 +1146,12 @@
     block(100,172,40,20,'#5c4030',2);
     rect(112,152,5,20,'#3a2a1e');
     block(104,138,20,14,'#e0b13b',2);
-    ctx.fillStyle = isDay ? 'rgba(244,162,89,0.12)' : 'rgba(244,162,89,0.34)';
-    ctx.beginPath(); ctx.arc(114,158,16,0,Math.PI*2); ctx.fill();
+    if (lampsOn()){
+      addLight(114, 152, 48, WARM, 0.34, () => block(104,138,20,14,'#ffd27a',2));
+    } else {
+      ctx.fillStyle = 'rgba(244,162,89,0.12)';
+      ctx.beginPath(); ctx.arc(114,158,16,0,Math.PI*2); ctx.fill();
+    }
     rect(130,164,7,9,'#e8dcc0'); // mug
 
     // bookshelf
@@ -990,8 +1181,12 @@
     // hanging pendant light
     rect(120,0,3,20,'#2a1c14');
     block(112,20,18,12,'#e0b13b',2);
-    ctx.fillStyle = isDay ? 'rgba(224,177,58,0.12)' : 'rgba(224,177,58,0.38)';
-    ctx.beginPath(); ctx.arc(121,36,14,0,Math.PI*2); ctx.fill();
+    if (lampsOn()){
+      addLight(121, 34, 60, '255,200,120', 0.30, () => block(112,20,18,12,'#ffd27a',2));
+    } else {
+      ctx.fillStyle = 'rgba(224,177,58,0.12)';
+      ctx.beginPath(); ctx.arc(121,36,14,0,Math.PI*2); ctx.fill();
+    }
 
     // menu chalkboard
     block(140,84,44,30,'#2a2320',2);
@@ -1062,6 +1257,19 @@
 
     rect(186,146,7,10,'#e8dcc0'); // coffee cup
 
+    // Desk lamp at the free left end of the desk (the office had no light of
+    // its own at night). Its base sits on the desk top at y=156.
+    rect(44,152,14,4,'#2a3238');                 // base
+    rect(50,134,2,18,'#3a4750');                 // stem
+    block(46,128,12,6, '#8a9aa6', 1);            // shade
+    if (lampsOn()){
+      addLight(52, 142, 40, WARM, 0.30, () => block(46,128,12,6,'#ffd27a',1));
+      // The screens light the room, and him, blue. Glow only, no redraw:
+      // he sits just in front of the main monitor.
+      addLight(108, 128, 48, '140,190,255', 0.26);
+      addLight(160, 136, 22, '140,190,255', 0.16);
+    }
+
     // plant
     block(240,160,16,28,'#4a5560',2);
     blob(248,150,12,'#8bab7f');
@@ -1120,8 +1328,12 @@
     rect(102,152,4,54,'#3a2a1e');
     rect(96,206,16,4,'#3a2a1e');
     block(94,138,20,14, '#e0b13b', 2);
-    ctx.fillStyle = isDay ? 'rgba(244,162,89,0.12)' : 'rgba(244,162,89,0.34)';
-    ctx.beginPath(); ctx.arc(104,158,16,0,Math.PI*2); ctx.fill();
+    if (lampsOn()){
+      addLight(104, 150, 48, WARM, 0.34, () => block(94,138,20,14,'#ffd27a',2));
+    } else {
+      ctx.fillStyle = 'rgba(244,162,89,0.12)';
+      ctx.beginPath(); ctx.arc(104,158,16,0,Math.PI*2); ctx.fill();
+    }
 
     // rug under the table
     rect(96,206,128,22, PAL.rugRed);
@@ -1312,20 +1524,20 @@
 
   function drawBeach(t, w, isDay){
     const shoreY = shoreLine();
-    skyGradient(0, 0, W, HORIZON, isDay);
-    if (isDay){
-      if (w === 'sunny') drawSun(t);
-      if (w !== 'sunny') drawClouds(t, w !== 'cloudy');
-    } else {
-      drawStars(t);
-    }
+    skyGradient(0, 0, W, HORIZON);
+    drawSkyDetails(t, w, HORIZON, true);
 
-    // Sea, darkening toward the shore so the horizon reads as distance.
+    // Sea, darkening toward the shore so the horizon reads as distance. Its
+    // colour follows the light, and it catches the sky's colour at dusk/dawn.
+    const n = curSky.night;
+    const far = mix(PAL.seaDayFar, PAL.seaNightFar, n), near = mix(PAL.seaDay, PAL.seaNight, n);
     const g = ctx.createLinearGradient(0, HORIZON, 0, shoreY);
-    g.addColorStop(0, isDay ? PAL.seaDayFar : PAL.seaNightFar);
-    g.addColorStop(1, isDay ? PAL.seaDay : PAL.seaNight);
+    g.addColorStop(0, far); g.addColorStop(1, near);
     ctx.fillStyle = g; ctx.fillRect(0, HORIZON, W, shoreY - HORIZON);
-    rect(0, HORIZON, W, 2, shade(isDay ? PAL.seaDayFar : PAL.seaNightFar, -0.10));
+    if (curSky.glow > 0.02){
+      rect(0, HORIZON, W, shoreY - HORIZON, 'rgba(255,150,120,' + (0.26 * curSky.glow * (1 - n * 0.5)).toFixed(3) + ')');
+    }
+    rect(0, HORIZON, W, 2, shade(far, -0.10));
 
     // St Mary's Island, up the coast to the north — so, off to your left. Kept
     // low and hazy: it's a couple of miles off, and a hard dark mass this high
@@ -1337,7 +1549,7 @@
     rect(lx, lTop, 4, 16, isDay ? '#dcdcd2' : '#7d8890');   // tower
     rect(lx, lTop - 3, 4, 3, isDay ? '#8f9aa0' : PAL.outline); // lamp housing
     // The light turns: lit for part of each cycle, and actually shines now.
-    if (!isDay && Math.floor(t / 8) % 3 === 0){
+    if (lampsOn() && Math.floor(t / 8) % 3 === 0){
       addLight(lx + 2, lTop - 2, 24, '255,236,180', 0.60, () => rect(lx - 1, lTop - 3, 6, 3, '#fff3c4'));
     }
 
@@ -1397,7 +1609,7 @@
       drawBoat(0, 0, q.s, q.b.category);
       ctx.restore();
       state.boatHits.push({ x: x - q.hw/2, y: y - q.hh + 4, w: q.hw, h: q.hh, boat: q.b });
-      if (!isDay) addShipLights(x, y, q);
+      if (lampsOn()) addShipLights(x, y, q);
     }
 
     // Wet sand: whatever the retreating water has uncovered. Wide at low tide,
@@ -1424,7 +1636,7 @@
     rect(232, 216, 18, 3, PAL.woodDark);
     rect(234, 214, 12, 2, PAL.woodMid);
 
-    // Night shading and weather happen in finishOutdoor(), after he's drawn.
+    // Night shading and weather happen in finishScene(), after he's drawn.
   }
 
   function drawDragon(x,y){
@@ -1437,6 +1649,7 @@
   // ---- character ----
   function drawCharacter(x,y,frame,seated,facingLeft){
     ctx.save();
+    state.charBox = { x: x - 4, y: y - 12, w: 32, h: 58 };   // so lights don't paint over him
     // Mirror about the sprite's own centre line (x+12) so he flips in place.
     // (The old version negated x after translating, landing him at ~3x.)
     if (facingLeft){ ctx.translate((x+12)*2, 0); ctx.scale(-1,1); }
@@ -1498,35 +1711,41 @@
   function render(){
     const t = state.tick;
     const w = mapWeather(state.weather.code);
-    const isDay = !!state.weather.isDay;
+    curSky = skyState();
+    const isDay = curSky.night < 0.5;
     lights.length = 0;
+    state.charBox = null;
 
     if (state.transitioning){
       drawOutside(t, w, isDay);
       drawWalker(t);
-      finishOutdoor(t, w, isDay);
+      finishScene(t, w, true);
     } else if (state.location === 'home'){
       drawHome(t,w,isDay);
       drawCharacter(96, 168, Math.floor(t/3)%2, false, false);
+      finishScene(t, w, false);
     } else if (state.location === 'cafe'){
       drawCafe(t,w,isDay);
       drawCharacter(56, 156, 0, true, false);
+      finishScene(t, w, false);
     } else if (state.location === 'work'){
       drawWork(t,w,isDay);
       drawCharacter(116, 152, 0, true, false);
+      finishScene(t, w, false);
     } else if (state.location === 'bookstore'){
       drawBookstore(t,w,isDay);
       drawCharacter(148, 164, Math.floor(t/4)%2, false, false);
+      finishScene(t, w, false);
     } else if (state.location === 'beach'){
       drawBeach(t,w,isDay);
       // standing legs end at y+44, so y=174 puts his feet on the dry sand
       drawCharacter(120 + Math.sin(t/16)*46, 174, Math.floor(t/3)%2, false, false);
-      finishOutdoor(t, w, isDay);
+      finishScene(t, w, true);
     } else {
       drawOutside(t,w,isDay);
       // character is 27 wide drawn from x-3, so x=148 centres him on the 140..180 path
       drawCharacter(148 + Math.sin(t/10)*6, 156, Math.floor(t/3)%2, false, false);
-      finishOutdoor(t, w, isDay);
+      finishScene(t, w, true);
     }
 
     if (state.location !== 'beach') state.boatHits.length = 0;
@@ -1650,7 +1869,9 @@
           message: text,
           weather: weatherLabel(w).toLowerCase(),
           location: state.location,
-          isDay: !!state.weather.isDay,
+          isDay: isDaytime(),
+          sky: skyState().phase,
+          moon: moonName(moonPhase()),
         }),
         signal: controller.signal,
       });

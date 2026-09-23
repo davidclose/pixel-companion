@@ -104,10 +104,16 @@ function describeBoats(){
     `see, so don't say you looked it up.`;
 }
 
-function buildSystemPrompt(weather, location, isDay, tide) {
+const SKY_WORDS = { dawn: 'dawn', day: 'daytime', dusk: 'dusk, the sun going down', night: 'night' };
+const MOON_WORDS = new Set(['new moon', 'waxing crescent', 'first quarter moon', 'waxing gibbous moon',
+  'full moon', 'waning gibbous moon', 'last quarter moon', 'waning crescent']);
+
+function buildSystemPrompt(weather, location, isDay, tide, sky, moon) {
+  const when = SKY_WORDS[sky] || (isDay ? 'daytime' : 'night');
   return `You are a quiet, easygoing pixel-art companion character living in a small ` +
     `desktop app, based in Whitley Bay, UK. Right now it's ${weather} and ` +
-    `${isDay ? 'daytime' : 'night'}, and you're currently at "${location}". ` +
+    `${when}, and you're currently at "${location}". ` +
+    (moon && MOON_WORDS.has(moon) ? `Tonight's moon is a ${moon}. ` : '') +
     (tide ? `The tide is currently: ${tide}. Mention it only if it comes up naturally. ` : '') +
     `You share your ` +
     `home with a bearded dragon. Reply in-character, first person, 1-3 short sentences, ` +
@@ -168,11 +174,11 @@ function runClaude(args, timeoutMs){
   });
 }
 
-async function askClaude(message, weather, location, isDay, tide) {
+async function askClaude(message, weather, location, isDay, tide, sky, moon) {
   const wantsSearch = needsWebSearch(message);
   const baseArgs = [
     '-p', message,
-    '--system-prompt', buildSystemPrompt(weather, location, isDay, tide),
+    '--system-prompt', buildSystemPrompt(weather, location, isDay, tide, sky, moon),
     '--output-format', 'json',
     '--no-session-persistence',
     '--tools', wantsSearch ? 'WebSearch' : '',
@@ -279,7 +285,10 @@ const server = http.createServer((req, res) => {
         const location = typeof parsed.location === 'string' ? parsed.location : 'home';
         const isDay = parsed.isDay !== false;
         const tide = typeof parsed.tide === 'string' ? parsed.tide.slice(0, 40) : null;
-        const reply = await askClaude(message, weather, location, isDay, tide);
+        // Both checked against fixed lists in buildSystemPrompt, never passed through raw.
+        const sky = typeof parsed.sky === 'string' ? parsed.sky : null;
+        const moon = typeof parsed.moon === 'string' ? parsed.moon : null;
+        const reply = await askClaude(message, weather, location, isDay, tide, sky, moon);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ reply }));
       } catch (e) {

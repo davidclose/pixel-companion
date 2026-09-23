@@ -100,6 +100,51 @@ Two files, no build step, no npm install:
   than quitting (`app.isQuiting` flag distinguishes a real quit from the tray
   menu from an incidental window close).
 
+### Time of day: dusk, dawn and the moon
+
+Day and night used to be a switch: Open-Meteo's `is_day`, refreshed with
+the weather every 30 minutes, flipped the whole scene at once and could lag
+the real sunset by up to half an hour. Now the weather request also asks for
+`daily=sunrise,sunset` (in GMT, parsed with an explicit `Z`, same reason as
+the tide; `past_days=1` covers the small hours) and `skyState()` works out,
+from the clock, every frame:
+
+- `night`: 0 day to 1 night. Darkening runs from 15 min before sunset to 45
+  min after, and the reverse around sunrise.
+- `glow`: how strongly the sky is sunset/sunrise coloured, peaking at the
+  event and gone 55 min either side.
+- `lift`: the sun's height, sinking to the horizon (and clipped there) over
+  the last 70 min before sunset, rising the same way after sunrise.
+- `phase`: dawn / day / dusk / night, used by the status line, his speech and
+  the chat prompt.
+
+The sky blends day into night gradients with sunset colour over them, and so
+does the view through every window. Clouds tint pink at dusk and go slate
+grey at night; the sea follows the light and catches the sky's colour. An
+outdoor golden-hour wash warms everything around sunset. Lamps, windows and
+ships' lights switch on part-way into dusk (`lampsOn()`, night > 0.25) and
+brighten as it gets darker. From the beach you face east over the sea, so
+the sun rises out of it at dawn, but in the evening it's setting behind you
+and isn't drawn, while the sky still colours.
+
+Stars and the moon only show where the sky is clear. Before this, a rainy
+night showed a sky full of stars.
+
+**The moon is in its real phase**, computed from the mean synodic month
+counted from a known new moon, with no API. Checked against five eclipse
+dates, it's within about 16 hours every time, well under a pixel at this
+size. It's drawn row by row from the terminator to the limb, the dark side
+faintly visible. On a clear night it's registered as a light, so it glows;
+on a cloudy one it's drawn behind the clouds, dimmed. Simplification: it
+always sits in the same spot and is shown whenever it's night, ignoring
+moonrise and moonset.
+
+Chat is told the phase (dawn/day/dusk/night) and the moon phase, both
+checked against fixed lists on the server, so he doesn't call dusk
+"daytime". He also comments on the sky outdoors: a sunset, an early start, a
+full moon, a moonless night. And he no longer says "Lovely bit of sun" at
+10pm, since Open-Meteo calls a clear night "sunny" as well.
+
 ### Night lighting
 
 Outdoor scenes (outside, beach, and the walk between places) don't darken
@@ -125,8 +170,15 @@ stayed at full daylight brightness and looked pasted on. What now lights up:
   red port side. The glow is kept small on purpose: at first a near ship's
   light blew out into a white disc bigger than the ship.
 
-Interiors are unchanged; they're lit indoors, so night only shows through
-their windows.
+Interiors go through the same `finishScene()`, with a gentler shade: the
+room dims while its lamp throws a warm pool of light (home's table lamp, the
+café's pendant, the bookshop's floor lamp). The office, which had no light at
+all, got a desk lamp, and its monitors cast blue light on him. Monitors are
+glow-only, with no redraw, because he sits right in front of the screen and a
+redraw would paint it over his head. More generally, any light whose redraw
+would land on him is skipped (`state.charBox`).
+
+Cost: frames still draw in 0.29 to 0.86 ms with all of this on.
 
 He also blinks: one frame every ~5 seconds (`state.tick % 29`), with a quick
 double blink every third time.
@@ -466,6 +518,8 @@ Implementation notes:
 
 ## Ideas discussed for next steps
 
+- Moonrise/moonset, so the moon is only up when it really is (needs an
+  astronomy calculation or API; the phase alone is done).
 - Wider range of animated expressions/moods reacting to conversation tone.
 - Idle animations / small gestures (wave, nod) for extra life.
 - A paid Apple Developer ID certificate, if the right-click-Open-once
