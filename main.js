@@ -89,6 +89,12 @@ app.whenReady().then(() => {
   tray.on('click', toggleWindow);
 });
 
+// Any real quit — Cmd+Q, logout, restart, shutdown — goes through
+// before-quit first. Without this, the close handler above treats it like the
+// red close button, hides the window and cancels the quit, so the app would
+// block a Mac from restarting. Only a plain window close should just hide.
+app.on('before-quit', () => { app.isQuiting = true; });
+
 app.on('window-all-closed', () => {
   // Stay running in the tray on all platforms — quitting is explicit (tray menu).
 });

@@ -100,11 +100,51 @@ Two files, no build step, no npm install:
   than quitting (`app.isQuiting` flag distinguishes a real quit from the tray
   menu from an incidental window close).
 
+### Night lighting
+
+Outdoor scenes (outside, beach, and the walk between places) don't darken
+themselves any more. They register light sources with `addLight()` as they
+draw, and `render()` calls `finishOutdoor()` **after** drawing him. That lays
+the night shade over everything, him included, then paints the lights back
+on top with additive blending (`'lighter'`) so they glow into the dark.
+Weather is drawn last, in front of the lights.
+
+Before this, night was a flat tint drawn inside each scene *before* the
+character, so every window and lamp got dimmed with everything else while he
+stayed at full daylight brightness and looked pasted on. What now lights up:
+
+- house, shop and office windows (`litWindow`), warm glass with mullions and
+  a halo on the wall;
+- the streetlamp, which now stands there by day too instead of appearing at
+  dusk, and throws a pool of light on the path;
+- St Mary's lighthouse when its beam comes round;
+- **ships' navigation lights, from their real AIS state.** A vessel under way
+  shows a white masthead light and a sidelight; one at anchor or moored shows
+  only a white anchor light. Looking east at north/south traffic, a ship
+  heading right has its green starboard side toward you, one heading left its
+  red port side. The glow is kept small on purpose: at first a near ship's
+  light blew out into a white disc bigger than the ship.
+
+Interiors are unchanged; they're lit indoors, so night only shows through
+their windows.
+
+He also blinks: one frame every ~5 seconds (`state.tick % 29`), with a quick
+double blink every third time.
+
 ### Render loop & behavior
 
 - A single `state` object holds current weather, location, transition flag,
   and a tick counter. Redrawn every ~180ms via `setInterval` — no diffing,
-  the whole canvas just repaints each tick.
+  the whole canvas just repaints each tick. Measured in the Opus 5.5 review,
+  that's cheap: 0.46-0.91 ms per frame depending on scene (340-880 canvas
+  calls), about half a percent of one core. Caching static layers in an
+  offscreen canvas would save a fraction of a millisecond, so it wasn't done.
+- **Drawing stops while the window is hidden** (`syncRendering()` on
+  `visibilitychange`). It used to keep repainting at the same rate in the
+  tray, measured at ~3% CPU hidden, the same as visible. Boat polling pauses
+  too; the server keeps listening to AIS regardless, so the vessel cache still
+  learns while he's out of sight. A page that loads hidden stays blank until
+  shown, which is harmless since nobody can see it.
 - Five scene functions (`drawHome`, `drawCafe`, `drawWork`, `drawBookstore`,
   `drawOutside`) each take `(tick, weatherState, isDay)` and draw their
   background, then `drawCharacter(x, y, frame, seated, facingLeft)` draws
@@ -347,6 +387,12 @@ Implementation notes:
   DNS-rebinding pages that point their own domain at 127.0.0.1. If you ever
   deliberately want it reachable from another device, that's a design change,
   not a one-line bind address edit — it would need authentication first.
+- **Quitting.** Closing the window only hides it, as a tray app should,
+  via the `close` handler in `main.js`. That handler used to swallow *every*
+  quit that didn't come from the tray menu, including the one macOS sends at
+  logout, restart and shutdown. Measured: a quit request, and even SIGTERM,
+  left it running 20+ seconds later. `before-quit` now marks the quit as
+  real first.
 - **Chat needs Claude Code logged in.** `claude auth status` shows
   `loggedIn`. When the login lapses, the chat log says so; run `claude` in
   Terminal and log in, and he picks real replies back up within a minute
@@ -376,12 +422,10 @@ Implementation notes:
   only every ~6 minutes, whereas positions arrive every few seconds. A short
   `node boat-source.js 45` run will show mostly `unknown`; that's expected, and
   self-corrects once the server has been running a while.
-- **`drawCharacter`'s `facingLeft` mirror is broken**, and has always been —
-  it does `translate(x*2,0); scale(-1,1)` and then draws at offsets from a
-  negated `x`, which lands at roughly `3x`. It has never shown up because every
-  `render()` call passes `facingLeft = false`. Don't copy that pattern: the
-  boats mirror correctly with `translate(x,y); scale(-1,1)` and then draw
-  centred on `0,0`. Fix `drawCharacter` before ever passing `true`.
+- **`drawCharacter`'s `facingLeft` mirror was broken until the Opus 5.5
+  review** — it translated by `x*2` and then negated `x`, landing him at
+  roughly `3x`. It never showed because nothing passes `true`. It now mirrors
+  about the sprite's own centre line (`x+12`), matching how the boats flip.
 - **A bad aisstream key looks like a network failure.** aisstream accepts the
   WebSocket first and only then validates your subscription, so a wrong key
   shows up as an immediate close with no data. `boat-source.js` detects this

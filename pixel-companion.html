@@ -743,6 +743,53 @@
     blob(x, baseY-28, r, '#5c8a4f');
   }
 
+  // ---- night lighting (outdoor scenes) ----
+  // Night used to be one flat dark tint laid over the finished scene *before*
+  // he was drawn, so every lamp and window was dimmed along with everything
+  // else while he stayed at full daylight brightness, looking pasted on. Now
+  // outdoor scenes register their light sources as they draw; once he's on the
+  // canvas, finishOutdoor() darkens everything, him included, then paints the
+  // lights back on top so they glow into the dark around them.
+  const lights = [];
+  function addLight(x, y, r, rgb, alpha, redraw){ lights.push({ x, y, r, rgb, alpha, redraw }); }
+
+  function glow(x, y, r, rgb, alpha){
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, 'rgba(' + rgb + ',' + alpha + ')');
+    g.addColorStop(1, 'rgba(' + rgb + ',0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+
+  const NIGHT_SHADE = 'rgba(8,12,26,0.46)';
+  const WARM = '255,196,120';
+
+  // A lit window: warm glass with thin mullions, and a halo on the wall.
+  function litWindow(x, y, w, h){
+    addLight(x + w/2, y + h/2, 18, WARM, 0.28, () => {
+      bevel(x, y, w, h, '#ffcf7a', 2);
+      const m = shade('#ffcf7a', -0.30);
+      rect(x + Math.floor(w/2), y, 1, h, m);
+      rect(x, y + Math.floor(h/2), w, 1, m);
+    });
+  }
+
+  function finishOutdoor(t, w, isDay){
+    if (!isDay){
+      rect(0, 0, W, H, NIGHT_SHADE);
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';   // light adds, never darkens
+      for (const L of lights) if (L.r) glow(L.x, L.y, L.r, L.rgb, L.alpha);
+      ctx.restore();
+      for (const L of lights) if (L.redraw) L.redraw();
+    }
+    lights.length = 0;
+    // Weather falls in front of everything, lights included.
+    if (w === 'rainy') drawRain(t);
+    if (w === 'snowy') drawSnow(t);
+    if (w === 'foggy') drawFogOverlay();
+  }
+
   // ---- outside ----
   // Four buildings share one row at 320 wide. The spacing is hand-tuned so the
   // roof overhangs (drawTriRoof spans x-8 .. x+w+8) never collide, and the path
@@ -780,8 +827,10 @@
       const puff = (t*0.4)%40;
       ctx.beginPath(); ctx.arc(16, 68-puff*0.5, 4+puff*0.12, 0, Math.PI*2); ctx.fill();
     }
-    block(13,104,12,12, isDay ? PAL.windowGlass : PAL.lampGlow, 2);
-    block(41,104,12,12, isDay ? PAL.windowGlass : PAL.lampGlow, 2);
+    block(13,104,12,12, PAL.windowGlass, 2);
+    if (!isDay) litWindow(13,104,12,12);
+    block(41,104,12,12, PAL.windowGlass, 2);
+    if (!isDay) litWindow(41,104,12,12);
     block(26,120,18,30, PAL.doorBrown, 2);
     rect(29,136,3,3,'#e0b13b'); // doorknob
     // window flower box
@@ -792,22 +841,27 @@
     block(80,92,50,58, PAL.bookWallExt, 3);
     drawTriRoof(80,92,50, PAL.bookRoofExt);
     block(84,80,42,10, PAL.bookSign, 2);
-    block(86,102,14,14, isDay ? PAL.windowGlass : PAL.lampGlow, 2);
+    block(86,102,14,14, PAL.windowGlass, 2);
+    if (!isDay) litWindow(86,102,14,14);
     block(104,120,18,30, PAL.doorBrown, 2);
 
     // cafe
     block(188,88,54,62, PAL.cafeWall, 3);
     drawTriRoof(188,88,54, PAL.cafeRoof);
     block(194,80,42,10, PAL.cafeSign, 2);
-    block(194,100,12,12, isDay ? PAL.windowGlass : PAL.lampGlow, 2);
-    block(226,100,12,12, isDay ? PAL.windowGlass : PAL.lampGlow, 2);
+    block(194,100,12,12, PAL.windowGlass, 2);
+    if (!isDay) litWindow(194,100,12,12);
+    block(226,100,12,12, PAL.windowGlass, 2);
+    if (!isDay) litWindow(226,100,12,12);
     block(206,120,24,30, PAL.doorBrown, 2);
 
     // work (far right)
     block(258,80,46,70, PAL.workWall, 3);
     rect(256,78,50,6, PAL.workRoof);
-    block(264,92,10,10, isDay ? PAL.windowGlass : PAL.lampGlow, 2);
-    block(286,92,10,10, isDay ? PAL.windowGlass : PAL.lampGlow, 2);
+    block(264,92,10,10, PAL.windowGlass, 2);
+    if (!isDay) litWindow(264,92,10,10);
+    block(286,92,10,10, PAL.windowGlass, 2);
+    if (!isDay) litWindow(286,92,10,10);
     block(270,124,22,26, PAL.doorBrown, 2);
 
     // low fence on the grass in front of the house
@@ -835,17 +889,18 @@
     flower(196,200,PAL.flowerWhite); flower(272,190,PAL.flowerRed);
     flower(288,212,PAL.flowerYellow);
 
+    // Streetlamp beside the path. It used to exist only at night, appearing
+    // out of nowhere at dusk; now it's always there and simply lights up.
+    rect(182,116,4,34,'#2a2320');
+    rect(179,106,10,3,'#2a2320');                 // cap
+    rect(180,109,8,7, isDay ? '#8a8f86' : '#3a3530');
     if (!isDay){
-      rect(0,0,W,H,'rgba(10,15,25,0.35)');
-      // streetlamp beside the path
-      rect(182,118,4,32,'#2a2320');
-      ctx.fillStyle='rgba(244,162,89,0.35)'; ctx.beginPath(); ctx.arc(184,114,14,0,Math.PI*2); ctx.fill();
-      rect(180,108,8,8, PAL.lampGlow);
+      addLight(184, 112, 26, '255,206,130', 0.50, () => {
+        rect(180,109,8,7,'#ffd88a'); rect(181,110,6,2,'#fff1c9');
+      });
+      addLight(178, 162, 34, '255,190,110', 0.20); // the pool it throws on the path
     }
-
-    if (w==='rainy') drawRain(t);
-    if (w==='snowy') drawSnow(t);
-    if (w==='foggy') drawFogOverlay();
+    // Night shading and weather now happen in finishOutdoor(), after he's drawn.
   }
 
   function drawWindowWeather(wx,wy,ww,wh,w,isDay,t){
@@ -1232,6 +1287,29 @@
     ctx.restore();
   }
 
+  // Real vessels show lights at night, and what they show depends on what
+  // they're doing — so the ones out there really do tell you something. One
+  // under way shows a white masthead light and a sidelight (from this beach,
+  // looking east at north/south traffic, one heading right has its green
+  // starboard side toward you, one heading left its red port side). One at
+  // anchor or moored, which is most of what waits off the Tyne, shows only a
+  // white all-round anchor light.
+  function addShipLights(x, y, q){
+    const d = Math.max(1, Math.round(q.s * 0.8));  // dot size grows with nearness
+    // Kept deliberately small: a near ship's light at the old size blew out
+    // into a white disc bigger than the ship, reading as a moon.
+    const r = 3 + q.s * 2.2;
+    const dot = (lx, ly, col) => () => rect(Math.round(lx - d/2), Math.round(ly - d/2), d, d, col);
+    const topY = y - 13 * q.s;                      // roughly the top of the superstructure
+    addLight(x, topY, r, '255,250,230', 0.32, dot(x, topY, '#fffbea'));
+    if (q.b.moving){
+      const dir = q.west ? -1 : 1;
+      const sx = x + dir * q.hw * 0.33, sy = y - 4 * q.s;
+      const green = !q.west;
+      addLight(sx, sy, r, green ? '90,255,140' : '255,80,70', 0.38, dot(sx, sy, green ? '#7dffa6' : '#ff6a5c'));
+    }
+  }
+
   function drawBeach(t, w, isDay){
     const shoreY = shoreLine();
     skyGradient(0, 0, W, HORIZON, isDay);
@@ -1258,8 +1336,10 @@
     const lx = 27, lTop = HORIZON - 15;
     rect(lx, lTop, 4, 16, isDay ? '#dcdcd2' : '#7d8890');   // tower
     rect(lx, lTop - 3, 4, 3, isDay ? '#8f9aa0' : PAL.outline); // lamp housing
-    // The light turns: lit for part of each cycle.
-    if (!isDay && Math.floor(t / 8) % 3 === 0) rect(lx - 1, lTop - 3, 6, 3, PAL.lampGlow);
+    // The light turns: lit for part of each cycle, and actually shines now.
+    if (!isDay && Math.floor(t / 8) % 3 === 0){
+      addLight(lx + 2, lTop - 2, 24, '255,236,180', 0.60, () => rect(lx - 1, lTop - 3, 6, 3, '#fff3c4'));
+    }
 
     // Wave rows. Longer, thicker and faster toward the front for perspective.
     for (let row = 0; row < 9; row++){
@@ -1317,6 +1397,7 @@
       drawBoat(0, 0, q.s, q.b.category);
       ctx.restore();
       state.boatHits.push({ x: x - q.hw/2, y: y - q.hh + 4, w: q.hw, h: q.hh, boat: q.b });
+      if (!isDay) addShipLights(x, y, q);
     }
 
     // Wet sand: whatever the retreating water has uncovered. Wide at low tide,
@@ -1343,10 +1424,7 @@
     rect(232, 216, 18, 3, PAL.woodDark);
     rect(234, 214, 12, 2, PAL.woodMid);
 
-    if (!isDay) rect(0, 0, W, H, 'rgba(10,15,25,0.35)');
-    if (w === 'rainy') drawRain(t);
-    if (w === 'snowy') drawSnow(t);
-    if (w === 'foggy') drawFogOverlay();
+    // Night shading and weather happen in finishOutdoor(), after he's drawn.
   }
 
   function drawDragon(x,y){
@@ -1359,7 +1437,9 @@
   // ---- character ----
   function drawCharacter(x,y,frame,seated,facingLeft){
     ctx.save();
-    if (facingLeft){ ctx.translate(x*2,0); ctx.scale(-1,1); x = -x; }
+    // Mirror about the sprite's own centre line (x+12) so he flips in place.
+    // (The old version negated x after translating, landing him at ~3x.)
+    if (facingLeft){ ctx.translate((x+12)*2, 0); ctx.scale(-1,1); }
     const bob = seated ? 0 : (frame%2===0 ? 0 : -2);
 
     // legs
@@ -1391,8 +1471,15 @@
     rect(x+4,y+6+bob,3,2, PAL.blush);
     rect(x+17,y+6+bob,3,2, PAL.blush);
     // eyes
-    rect(x+7,y+3+bob,3,4, PAL.ink);
-    rect(x+16,y+3+bob,3,4, PAL.ink);
+    // He blinks: one frame every ~5s, and every third time a quick double.
+    const bt = state.tick % 29;
+    if (bt === 0 || (bt === 2 && state.tick % 87 === 2)){
+      rect(x+7,y+5+bob,3,1, PAL.ink);
+      rect(x+16,y+5+bob,3,1, PAL.ink);
+    } else {
+      rect(x+7,y+3+bob,3,4, PAL.ink);
+      rect(x+16,y+3+bob,3,4, PAL.ink);
+    }
     // mouth
     rect(x+10,y+9+bob,4,2, PAL.mouth);
 
@@ -1412,10 +1499,12 @@
     const t = state.tick;
     const w = mapWeather(state.weather.code);
     const isDay = !!state.weather.isDay;
+    lights.length = 0;
 
     if (state.transitioning){
       drawOutside(t, w, isDay);
       drawWalker(t);
+      finishOutdoor(t, w, isDay);
     } else if (state.location === 'home'){
       drawHome(t,w,isDay);
       drawCharacter(96, 168, Math.floor(t/3)%2, false, false);
@@ -1432,19 +1521,37 @@
       drawBeach(t,w,isDay);
       // standing legs end at y+44, so y=174 puts his feet on the dry sand
       drawCharacter(120 + Math.sin(t/16)*46, 174, Math.floor(t/3)%2, false, false);
+      finishOutdoor(t, w, isDay);
     } else {
       drawOutside(t,w,isDay);
       // character is 27 wide drawn from x-3, so x=148 centres him on the 140..180 path
       drawCharacter(148 + Math.sin(t/10)*6, 156, Math.floor(t/3)%2, false, false);
+      finishOutdoor(t, w, isDay);
     }
 
     if (state.location !== 'beach') state.boatHits.length = 0;
     state.tick += 1;
   }
 
-  setInterval(render, 180);
+  // Draw only while someone can see him. Sitting in the tray all day, the
+  // window is hidden far more than it's shown, and it used to keep repainting
+  // ~5 frames a second regardless — measured at ~3% CPU hidden, the same as
+  // visible. The boat poll pauses too; the server keeps listening to AIS
+  // either way, so the vessel cache still learns while he's out of sight.
+  let renderTimer = null;
+  function syncRendering(){
+    if (document.hidden){
+      clearInterval(renderTimer); renderTimer = null;
+    } else if (!renderTimer){
+      if (state.location === 'beach') fetchBoats();   // come back to a current sea
+      render();
+      renderTimer = setInterval(render, 180);
+    }
+  }
+  document.addEventListener('visibilitychange', syncRendering);
+  syncRendering();
   fetchBoats();
-  setInterval(fetchBoats, 45000);
+  setInterval(() => { if (!document.hidden) fetchBoats(); }, 45000);
   fetchTide();
   setInterval(fetchTide, 30*60*1000);   // the forecast itself rarely changes
   setInterval(updateTide, 60*1000);     // but where we are within it does
