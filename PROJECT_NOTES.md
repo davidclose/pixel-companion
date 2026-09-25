@@ -59,10 +59,12 @@ of real AI.
 Two files, no build step, no npm install:
 
 - **`pixel-companion.html`** — the entire app: HTML/CSS/JS in one file,
-  rendering to a **480×360** canvas scaled up with `image-rendering:
-  pixelated`. The app is sized so the canvas lands at 720px, exactly 1.5×
+  rendering to a square **480×480** canvas scaled up with `image-rendering:
+  pixelated`. The app is sized so the canvas lands at 720×720, exactly 1.5×
   (3× on a Retina screen, so every pixel stays crisp); the Electron window is
-  800 wide to fit it. All art is procedural: no image assets, no sprite sheets.
+  800×1020 to fit it with the status line and chat. There are no buttons:
+  click a place to send him there, the weather refreshes itself every 30
+  minutes, and chat sends on Enter. All art is procedural: no image assets, no sprite sheets.
   See **The isometric town** below for how the world is built.
 
   The shading still comes from a few shared primitives: `shade(hex, amt)`
@@ -182,9 +184,8 @@ third time.
   `visibilitychange`), measured at ~3% CPU hidden before, ~0% after. Boat
   polling pauses too; the server keeps listening to AIS regardless.
 - A weighted rule table (`preferredLocations()`) picks where he'd rather be
-  from the weather and time of day; a 45s timer rerolls it if he's idle, the
-  "Nudge him" button forces one, and **you can click any place** (hover shows
-  its name) to send him there. `goTo()` builds a real route: back out the way
+  from the weather and time of day; a 45s timer rerolls it if he's idle, and
+  **you can click any place** (hover shows its name) to send him there. `goTo()` builds a real route: back out the way
   he came (through the door, or up the beach steps), along the promenade
   lane, and in. At the beach he wanders the sand every so often.
 - Adding a place means: an entry in `LOCATIONS`, `SPEECH` and
@@ -375,17 +376,39 @@ at the café table, on the promenade bench, and at his desk with his back to
 you. The speech bubble follows him, anchored over his head and kept inside
 the frame.
 
-**Ships.** You face west from the water, so north (0°) is on your right and
-south (180°) on your left. The bearing arc is 120° either side of east:
-traffic bunches at the Tyne mouth (~170-190°) and north past St Mary's
-(~340-360°), and a literal half circle piled every ship onto the two edges.
-Distance runs down the water, close in near the beach and far out at the
-front, on the curve `(min(d,16)/16) ** 0.7`, because real vessels here sit
-3-12 km out. A pass nudges apart ships queueing at the same spot so each
-stays hoverable. `drawBoat` picks a silhouette per category, and a ship is
-mirrored to face the way it's steaming. Hover or tap one for its card (built
-with `textContent`: names come off a public radio feed). With no live data,
-example boats are shown and labelled as examples.
+**The sea is a map, drawn to scale** (unlike the town), at `PX_PER_KM` = 10
+both ways. Straight down the screen is distance offshore; across is distance
+up or down the coast, north on the right (you look west from the water). Faint
+dashed lines mark every 5 km out, labelled in a tiny pixel font.
+
+- **Offshore is measured from the coast at a ship's own latitude**, not from
+  Whitley Bay, because the coast bends: off Sunderland it's about 5 km further
+  east. `COAST` is a rough table of the coastline from Sunderland to
+  Cresswell, good to about a kilometre, and `seaMap(lat, lon)` gives km north
+  of here and km out from that coast. Zero on the map is the low-tide line, so
+  a ship is never drawn on the sand whatever the tide is doing. (The beach and
+  tide are diorama-scale; only the water is to scale.)
+- **Ships up the Tyne or inside a harbour aren't drawn.** Their coordinates put
+  them inland of the coast line, so there's no honest place for them on the
+  sea. That's often most of what AIS reports here: the Shields ferries, the
+  DFDS ferry at its berth, the Tyne tugs, and wind-farm boats in Blyth
+  harbour. The server sends up to 40 ships so those don't crowd out the ones
+  actually at sea, and he only remarks on ships you can see.
+- **No nudging.** Ships used to be pushed apart when they overlapped; now each
+  sits at its true position, and overlapping ships simply overlap, as they do
+  at an anchorage. Hover picks the ship whose position is nearest the pointer.
+  Between AIS updates a moving ship is dead-reckoned from its speed and
+  course, at the map's true scale.
+- **Landmarks at their true positions** as reference points: St Mary's Island
+  and lighthouse 3.6 km north, right on the shore, and the Tyne piers 3 km
+  south, reaching about a kilometre out.
+- The hover card says where a ship is in the map's own terms ("3.4 km
+  offshore, 1.2 km north"). The offline example boats have only a bearing and
+  distance, so `boatLatLon()` works a position out from those.
+
+`drawBoat` picks a silhouette per category, and a ship is mirrored to face the
+way it's steaming. Cards are built with `textContent`: names come off a public
+radio feed.
 
 **He can talk about the ships.** `describeBoats()` in `companion-server.js`
 appends a short plain-language list of what's currently in view to the chat

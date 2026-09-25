@@ -304,7 +304,7 @@ const server = http.createServer((req, res) => {
   // this process — the page only ever sees this already-filtered summary.
   if (req.method === 'GET' && req.url.split('?')[0] === '/boats') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(boats.getBoats(12)));
+    res.end(JSON.stringify(boats.getBoats(40)));   // generous: river and harbour boats are dropped by the page
     return;
   }
 

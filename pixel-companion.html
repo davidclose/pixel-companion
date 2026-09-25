@@ -54,7 +54,7 @@
   }
   canvas{
     width: 100%;
-    aspect-ratio: 4 / 3;
+    aspect-ratio: 1 / 1;
     image-rendering: pixelated;
     image-rendering: -moz-crisp-edges;
     display: block;
@@ -151,22 +151,6 @@
     white-space: nowrap;
   }
   .meta{ color: var(--muted); font-size: 11px; text-align:right; }
-  .row{ display:flex; gap:10px; margin-top:10px; }
-  button{
-    flex:1;
-    font-family:'Space Mono', monospace;
-    font-weight:700;
-    font-size: 12px;
-    background: var(--slate);
-    color: var(--cream);
-    border: none;
-    padding: 9px 10px;
-    border-radius: 6px;
-    cursor:pointer;
-    transition: transform 0.1s ease, background 0.15s ease;
-  }
-  button:hover{ background: var(--coral); }
-  button:active{ transform: scale(0.97); }
   .foot{
     margin-top: 10px;
     font-size: 10px;
@@ -207,7 +191,6 @@
     padding: 9px 10px;
   }
   .chatrow input::placeholder{ color: var(--muted); }
-  .chatrow button{ flex: 0 0 auto; padding: 9px 14px; }
 </style>
 </head>
 <body>
@@ -216,7 +199,7 @@
   <p class="subtitle">Living quietly in Whitley Bay, weather and all</p>
 
   <div class="frame">
-    <canvas id="scene" width="480" height="360"></canvas>
+    <canvas id="scene" width="480" height="480"></canvas>
     <div class="speech" id="speech"></div>
     <div class="boat-tip" id="boatTip"></div>
   </div>
@@ -232,15 +215,9 @@
     <div class="loc-pill" id="locPill">HOME</div>
   </div>
 
-  <div class="row">
-    <button id="nudgeBtn">Nudge him</button>
-    <button id="refreshBtn">Refresh weather</button>
-  </div>
-
   <div class="chatlog" id="chatLog"></div>
   <div class="chatrow">
-    <input type="text" id="chatInput" placeholder="Say something to him…" maxlength="300">
-    <button id="sendBtn">Send</button>
+    <input type="text" id="chatInput" placeholder="Say something to him… (press Enter)" maxlength="300">
   </div>
 
   <p class="foot">Weather from Open-Meteo · updates every 30 min · Whitley Bay, UK</p>
@@ -254,7 +231,7 @@
   // Native 320x240 logical space — no scale transform. Every draw call below
   // works in these coordinates directly, which is what gives the art its
   // detail (twice the addressable resolution per axis vs the old 160x120).
-  const W = 480, H = 360;
+  const W = 480, H = 480;
 
   function shade(hex, amt){
     const c = hex.replace('#','');
@@ -496,7 +473,7 @@
   // asking Claude, so the beach still feels alive with no bridge running.
   function boatSpeech(){
     if (state.location !== 'beach' || !state.boatsLive || !state.boats.length) return null;
-    const named = state.boats.filter(b => b.name && !/^Vessel /.test(b.name));
+    const named = state.boats.filter(b => b.name && !/^Vessel /.test(b.name) && onTheSea(b));
     if (!named.length) return null;
     const b = named[Math.floor(Math.random() * Math.min(4, named.length))];
     const nm = vesselCase(b.name);
@@ -677,7 +654,7 @@
   const EXAMPLE_BOATS = [
     { name:'Example cargo ship', category:'cargo',     distanceKm: 6.5, bearing: 78,  speedKts: 9,   course: 200, example:true },
     { name:'Example ferry',      category:'passenger', distanceKm: 11,  bearing: 120, speedKts: 14,  course: 20,  example:true },
-    { name:'Example tug',        category:'tug',       distanceKm: 4,   bearing: 160, speedKts: 3,   course: 190, example:true },
+    { name:'Example tug',        category:'tug',       distanceKm: 4,   bearing: 130, speedKts: 3,   course: 190, example:true },
     { name:'Example fishing boat', category:'fishing', distanceKm: 2.5, bearing: 100, speedKts: 1.5, course: 40,  example:true },
     { name:'Example yacht',      category:'sailing',   distanceKm: 16,  bearing: 55,  speedKts: 5,   course: 150, example:true },
   ];
@@ -1470,8 +1447,100 @@
     for (let x = 0; x < W; x += 2) ctx.fillRect(x, Math.round(wl + wash + Math.sin(x / 17 + t / 5) * 1.5), 2, 2);
   }
 
-  // St Mary's Island and its lighthouse, up the coast to the north: your right.
-  const ISLAND = { x: 452, y: rowY(HIGH_WATER_S) + BEACH_DROP + 40 };
+  // ---------- the sea as a map ----------
+  // Unlike the town, the sea is drawn to scale, with the same pixels per km
+  // both ways: straight down the screen is distance out from the shore, and
+  // across is distance up or down the coast. You look west from the water, so
+  // north is on your right.
+  const HOME_LAT = 55.0393, HOME_LON = -1.4472;      // the point the weather and AIS use
+  const PX_PER_KM = 10;
+  const KM_PER_DEG_LAT = 111.2;
+  const kmPerDegLon = (lat) => 111.32 * Math.cos(lat * Math.PI / 180);
+
+  // The coastline from Sunderland up to Cresswell, as [latitude, longitude],
+  // good to about a kilometre. "Offshore" is measured from the coast at a
+  // ship's own latitude, not from Whitley Bay, because the coast bends: off
+  // Sunderland it's 5 km further east than here.
+  const COAST = [[54.90, -1.357], [54.95, -1.363], [54.975, -1.370], [55.00, -1.410], [55.012, -1.415],
+                 [55.03, -1.435], [55.04, -1.443], [55.07, -1.448], [55.085, -1.468], [55.12, -1.488],
+                 [55.15, -1.500], [55.19, -1.508], [55.25, -1.540]];
+  function coastLon(lat){
+    if (lat <= COAST[0][0]) return COAST[0][1];
+    for (let i = 1; i < COAST.length; i++){
+      const [la1, lo1] = COAST[i];
+      if (lat <= la1){
+        const [la0, lo0] = COAST[i - 1];
+        return lo0 + (lo1 - lo0) * (lat - la0) / (la1 - la0);
+      }
+    }
+    return COAST[COAST.length - 1][1];
+  }
+  // km north of here, and km out from the coast (negative: inland, which
+  // means up the Tyne or in a harbour)
+  function seaMap(lat, lon){
+    return { northKm: (lat - HOME_LAT) * KM_PER_DEG_LAT, offshoreKm: (lon - coastLon(lat)) * kmPerDegLon(lat) };
+  }
+  // Zero on the map is the low-tide line, so however far out the tide goes, a
+  // ship is never drawn on the sand.
+  const MAP_ZERO_Y = rowY(HIGH_WATER_S) + BEACH_DROP + 2 + 16;
+  const mapX = (northKm) => W / 2 + northKm * PX_PER_KM;
+  const mapY = (offshoreKm) => MAP_ZERO_Y + Math.max(0, offshoreKm) * PX_PER_KM;
+
+  // Live ships carry their latitude and longitude; the offline examples only
+  // have a bearing and distance, so place those from that.
+  function boatLatLon(b){
+    if (typeof b.lat === 'number' && typeof b.lon === 'number') return { lat: b.lat, lon: b.lon };
+    const r = (b.bearing || 0) * Math.PI / 180, d = b.distanceKm || 0;
+    return { lat: HOME_LAT + d * Math.cos(r) / KM_PER_DEG_LAT, lon: HOME_LON + d * Math.sin(r) / kmPerDegLon(HOME_LAT) };
+  }
+  // A ship up the river or inside a harbour isn't on the sea, and there's no
+  // honest place to draw it on this map, so it isn't drawn.
+  function onTheSea(b){ const { lat, lon } = boatLatLon(b); return seaMap(lat, lon).offshoreKm >= -0.3; }
+
+  // Landmarks at their true positions, as reference points for the ships.
+  const ST_MARYS = seaMap(55.0719, -1.4497);
+  const ISLAND = { x: Math.round(mapX(ST_MARYS.northKm)), y: MAP_ZERO_Y + 3 };
+  const TYNE_PIERS = [
+    { head: seaMap(55.0147, -1.4014), from: -1.8 },     // North Pier, Tynemouth
+    { head: seaMap(55.0096, -1.3985), from: -2.3 },     // South Pier, South Shields
+  ];
+
+  // The Tyne piers: two breakwaters reaching out from the river mouth, each
+  // with its light at the end.
+  function drawTynePiers(){
+    for (const p of TYNE_PIERS){
+      const x1 = Math.round(mapX(p.head.northKm)), y1 = Math.round(mapY(p.head.offshoreKm));
+      const x0 = Math.round(mapX(p.head.northKm + p.from * 0.08)), y0 = MAP_ZERO_Y - 14;
+      for (let y = y0; y <= y1; y++){
+        const x = Math.round(x0 + (x1 - x0) * (y - y0) / Math.max(1, y1 - y0));
+        rect(x - 1, y, 4, 1, PAL.outline);
+        rect(x, y, 2, 1, PAL.seaWall);
+      }
+      rect(x1 - 1, y1 - 6, 4, 7, PAL.outline); rect(x1, y1 - 5, 2, 5, '#f2eee4'); rect(x1, y1 - 6, 2, 1, '#c0392b');
+    }
+  }
+
+  // A tiny pixel font for the distance markers.
+  const GLYPHS = { '0': '111101101101111', '1': '010110010010111', '2': '111001111100111',
+                   '5': '111100111001111', 'K': '101101110101101', 'M': '101111111101101' };
+  function pixelText(str, x, y, col){
+    ctx.fillStyle = col;
+    let cx = x;
+    for (const ch of str){
+      const g = GLYPHS[ch];
+      if (g) for (let i = 0; i < 15; i++) if (g[i] === '1') ctx.fillRect(cx + i % 3, y + Math.floor(i / 3), 1, 1);
+      cx += 4;
+    }
+  }
+  // Faint lines every 5 km out, so a ship's distance offshore can be read.
+  function drawDistanceScale(){
+    for (let km = 5; mapY(km) < H - 4; km += 5){
+      const y = Math.round(mapY(km));
+      ctx.fillStyle = 'rgba(255,255,255,0.14)';
+      for (let x = 26; x < W; x += 6) ctx.fillRect(x, y, 3, 1);
+      pixelText(km + 'KM', 4, y - 2, 'rgba(255,255,255,0.55)');
+    }
+  }
   // An angular boulder sitting on (cx, by): a lit top facet, a shaded
   // lower-right facet, the rest in its base colour, outlined dark. Faceted
   // polygons rather than circles, filled crisp like the rooms.
@@ -1514,20 +1583,6 @@
     rect(cx - 3, y - 46, 7, 2, '#2a2320'); rect(cx - 2, y - 47, 5, 1, '#2a2320');   // domed roof
     rect(cx, y - 49, 1, 2, '#2a2320');                               // finial
     if (flashing) addLight(cx + 0.5, y - 40, 30, '255,236,180', 0.7, () => glass(true));
-  }
-
-  // Where a real vessel sits. You face west, so north (0°) is on your right
-  // and south (180°) on your left; the arc is wider than a literal half
-  // circle because traffic bunches at the Tyne mouth and north past St Mary's.
-  // Distance runs down the water: close in near the beach, far out at the front.
-  const VIEW_ARC = 120;
-  function boatScreenPos(b, seaTop){
-    let off = b.bearing - 90;
-    if (off > 180) off -= 360;
-    if (off < -180) off += 360;
-    const fx = Math.max(-1, Math.min(1, off / VIEW_ARC));
-    const f = Math.pow(Math.min(b.distanceKm, 16) / 16, 0.7);
-    return { x: W / 2 - fx * 200, y: seaTop + 16 + f * (H - seaTop - 30), s: 1.15 };
   }
 
   function drawBoat(cx, waterY, s, cat){
@@ -1647,34 +1702,29 @@
 
   function drawShips(t){
     state.boatHits.length = 0;
-    const seaTop = waterlineY();
-    const elapsed = (Date.now() - state.boatsAt) / 1000;
-    const placed = [];
+    drawTynePiers();
+    const elapsed = Math.min(120, Math.max(0, (Date.now() - state.boatsAt) / 1000));
+    const items = [];
     for (const b of state.boats){
-      const pos = boatScreenPos(b, seaTop);
-      const left = Math.cos((b.course || 0) * Math.PI / 180) < 0;    // heading south: to your left
-      const drift = Math.max(-12, Math.min(12, (b.speedKts || 0) * elapsed * 0.05)) * (left ? -1 : 1);
-      placed.push({ b, left, s: pos.s, x: pos.x + drift,
-        y: pos.y + Math.sin((t / 9) + b.distanceKm) * 1.2, hw: 30, hh: 24 });
+      if (!onTheSea(b)) continue;
+      const { lat, lon } = boatLatLon(b);
+      const m = seaMap(lat, lon);
+      // Between updates a moving ship carries on at its reported speed and
+      // course: dead reckoning, at the map's true scale.
+      const c = (b.course || 0) * Math.PI / 180;
+      const km = (b.moving ? (b.speedKts || 0) : 0) * 1.852 * elapsed / 3600;
+      const north = m.northKm + km * Math.cos(c), off = m.offshoreKm + km * Math.sin(c);
+      const q = { b, left: Math.cos(c) < 0, s: 1, hw: 26, hh: 20,
+        x: Math.max(8, Math.min(W - 8, mapX(north))), y: Math.min(H - 5, mapY(off)) + Math.sin(t / 9 + (b.distanceKm || 0)) * 0.8 };
+      items.push({ y: q.y, draw: () => {
+        const x = Math.round(q.x), y = Math.round(q.y);
+        ctx.save(); ctx.translate(x, y); if (q.left) ctx.scale(-1, 1);
+        drawBoat(0, 0, q.s, q.b.category);
+        ctx.restore();
+        state.boatHits.push({ x: x - q.hw / 2, y: y - q.hh + 4, w: q.hw, h: q.hh, cx: x, cy: y, boat: q.b });
+        if (lampsOn()) addShipLights(x, y, q);
+      } });
     }
-    // Ships queueing for the same river mouth land almost on top of one
-    // another; nudge apart any that would overlap, so each stays hoverable.
-    placed.sort((a, b) => a.x - b.x);
-    for (let i = 1; i < placed.length; i++){
-      const prev = placed[i - 1], cur = placed[i], need = (prev.hw + cur.hw) * 0.5 + 3;
-      if (Math.abs(cur.y - prev.y) < 15 && cur.x - prev.x < need) cur.x = prev.x + need;
-    }
-    for (const q of placed) q.x = Math.max(16, Math.min(W - 16, q.x));
-
-    // island and ships, back to front
-    const items = placed.map(q => ({ y: q.y, draw: () => {
-      const x = Math.round(q.x), y = Math.round(q.y);
-      ctx.save(); ctx.translate(x, y); if (q.left) ctx.scale(-1, 1);
-      drawBoat(0, 0, q.s, q.b.category);
-      ctx.restore();
-      state.boatHits.push({ x: x - q.hw / 2, y: y - q.hh + 4, w: q.hw, h: q.hh, boat: q.b });
-      if (lampsOn()) addShipLights(x, y, q);
-    } }));
     items.push({ y: ISLAND.y, draw: () => drawIsland(t) });
     items.sort((a, b) => a.y - b.y).forEach(it => it.draw());
   }
@@ -1964,6 +2014,7 @@
     drawSkyDetails(t, w, SKY_LINE);
     drawWindowViews(t, w);
     drawSea(t);
+    drawDistanceScale();
     ctx.drawImage(staticLayer, 0, 0);
     drawShips(t);
     roomLife(t);
@@ -2008,12 +2059,6 @@
   setInterval(fetchWeather, 30*60*1000);
   setInterval(maybeStroll, 7000);
 
-  document.getElementById('nudgeBtn').addEventListener('click', ()=>{
-    if (state.walking && state.walkTo) return;
-    const pool = LOCATIONS.filter(l => l !== state.location);
-    goTo(pool[Math.floor(Math.random()*pool.length)]);
-  });
-  document.getElementById('refreshBtn').addEventListener('click', fetchWeather);
 
   // ---------- chat: local Claude Code bridge, with an offline fallback ----------
   const CHAT_REPLIES = [
@@ -2181,12 +2226,15 @@
     if (!r.width || !r.height) return null;
     const lx = (clientX - r.left) / r.width * W;
     const ly = (clientY - r.top) / r.height * H;
-    // Back to front: the nearest boat is drawn last, so it wins an overlap.
-    for (let i = state.boatHits.length - 1; i >= 0; i--){
-      const h = state.boatHits[i];
-      if (lx >= h.x && lx <= h.x + h.w && ly >= h.y && ly <= h.y + h.h) return h;
+    // Ships drawn to scale can overlap, so of those under the pointer, the one
+    // whose actual position is closest wins.
+    let best = null, bestD = Infinity;
+    for (const h of state.boatHits){
+      if (lx < h.x || lx > h.x + h.w || ly < h.y || ly > h.y + h.h) continue;
+      const d = Math.hypot(lx - h.cx, ly - (h.cy - 4));
+      if (d < bestD){ bestD = d; best = h; }
     }
-    return null;
+    return best;
   }
 
   function describeBoat(b){
@@ -2211,9 +2259,9 @@
     const lines = [];
     const desc = describeBoat(b);
     if (desc) lines.push(desc);
-    if (typeof b.distanceKm === 'number'){
-      lines.push(b.distanceKm + ' km away, bearing ' + b.bearing + '°');
-    }
+    const { lat, lon } = boatLatLon(b), m = seaMap(lat, lon);
+    const along = Math.abs(m.northKm) < 0.5 ? 'straight out from here' : Math.abs(m.northKm).toFixed(1) + ' km ' + (m.northKm > 0 ? 'north' : 'south');
+    lines.push(Math.max(0, m.offshoreKm).toFixed(1) + ' km offshore, ' + along);
     if (typeof b.speedKts === 'number'){
       lines.push(b.speedKts > 0.5 ? b.speedKts + ' knots' : 'At anchor / moored');
     }
@@ -2300,7 +2348,6 @@
     if (place && place !== state.location) goTo(place);
   });
 
-  document.getElementById('sendBtn').addEventListener('click', sendChat);
   document.getElementById('chatInput').addEventListener('keydown', (e)=>{
     if (e.key === 'Enter') sendChat();
   });

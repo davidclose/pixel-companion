@@ -19,11 +19,12 @@ let alwaysOnTop = false;
 
 function createWindow(){
   win = new BrowserWindow({
-    // Wide enough for the whole town at a crisp 1.5x (see .app in the page).
+    // Sized for the whole square scene at a crisp 1.5x (see .app in the page)
+    // plus the status line and chat beneath it.
     width: 800,
-    height: 900,
+    height: 1020,
     minWidth: 520,
-    minHeight: 640,
+    minHeight: 700,
     title: 'Pixel Companion',
     alwaysOnTop,
     webPreferences: {
