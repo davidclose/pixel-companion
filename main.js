@@ -21,9 +21,9 @@ function createWindow(){
   win = new BrowserWindow({
     // Sized for the whole square scene at a crisp 1.5x (see .app in the page)
     // plus the status line and chat beneath it.
-    width: 800,
+    width: 1420,
     height: 1020,
-    minWidth: 520,
+    minWidth: 700,
     minHeight: 700,
     title: 'Pixel Companion',
     alwaysOnTop,

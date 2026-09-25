@@ -59,10 +59,10 @@ of real AI.
 Two files, no build step, no npm install:
 
 - **`pixel-companion.html`** — the entire app: HTML/CSS/JS in one file,
-  rendering to a square **480×480** canvas scaled up with `image-rendering:
-  pixelated`. The app is sized so the canvas lands at 720×720, exactly 1.5×
+  rendering to a **896×480** canvas scaled up with `image-rendering:
+  pixelated`. The app is sized so the canvas lands at 1344×720, exactly 1.5×
   (3× on a Retina screen, so every pixel stays crisp); the Electron window is
-  800×1020 to fit it with the status line and chat. There are no buttons:
+  1420×1020 to fit it with the status line and chat. There are no buttons:
   click a place to send him there, the weather refreshes itself every 30
   minutes, and chat sends on Enter. All art is procedural: no image assets, no sprite sheets.
   See **The isometric town** below for how the world is built.
@@ -347,6 +347,19 @@ along the back, so he's always in front of it and draw order stays simple.
 The front walls are drawn again on top of him when he's inside
 (`stubLayers`), since they're between him and you.
 
+**The River Tyne** runs down the left of the scene, from behind the skyline
+out to the sea between the two piers, with the Tynemouth coast between it
+and the town: Tynemouth Priory on the skyline, the Collingwood Monument on
+the north bank, benches and lamps along a longer promenade, and a row of
+beach huts on the sands. The town sits 416px further right than before
+(`OX` = 512) to make room. Sized for this Mac's screen (16-inch, "looks like"
+2560×1440, about 188 CSS px per inch): the river mouth is about an inch
+wide and the nearer pier about 2 inches left of where the scene used to
+start. The river's water is live, like the sea's: the channel is cut out of
+the static layer (`carveRiver()`) and drawn each frame underneath
+(`drawRiver()`), darker upstream and sea-coloured at the mouth, with the
+current running out.
+
 **Outdoors,** from the back: a hazy skyline of the rest of the town (with the
 Spanish City dome), the promenade (lamp posts, a bench, a red postbox, trees,
 a planter), white railings and the sea wall with steps down, the beach
@@ -376,10 +389,15 @@ at the café table, on the promenade bench, and at his desk with his back to
 you. The speech bubble follows him, anchored over his head and kept inside
 the frame.
 
-**The sea is a map, drawn to scale** (unlike the town), at `PX_PER_KM` = 10
-both ways. Straight down the screen is distance offshore; across is distance
-up or down the coast, north on the right (you look west from the water). Faint
-dashed lines mark every 5 km out, labelled in a tiny pixel font.
+**The sea is a map.** Straight down the screen is distance offshore, **to
+scale** at `PX_PER_KM` = 10, with faint lines every 5 km out labelled in a
+tiny pixel font. Across is position up or down the coast, north on the right
+(you look west from the water), but that axis can't be to scale any more:
+with the river drawn in, the Tyne sits over 500px from the beach although
+it's only 3 km away, while St Mary's is 3.6 km the other way. So `coastX()`
+anchors it to the landmarks (the Tyne mouth, the beach steps, St Mary's) and
+places a ship in proportion within its stretch. A ship just off the piers is
+drawn just off the piers; its distance offshore is exact.
 
 - **Offshore is measured from the coast at a ship's own latitude**, not from
   Whitley Bay, because the coast bends: off Sunderland it's about 5 km further
@@ -388,20 +406,22 @@ dashed lines mark every 5 km out, labelled in a tiny pixel font.
   of here and km out from that coast. Zero on the map is the low-tide line, so
   a ship is never drawn on the sand whatever the tide is doing. (The beach and
   tide are diorama-scale; only the water is to scale.)
-- **Ships up the Tyne or inside a harbour aren't drawn.** Their coordinates put
-  them inland of the coast line, so there's no honest place for them on the
-  sea. That's often most of what AIS reports here: the Shields ferries, the
-  DFDS ferry at its berth, the Tyne tugs, and wind-farm boats in Blyth
-  harbour. The server sends up to 40 ships so those don't crowd out the ones
-  actually at sea, and he only remarks on ships you can see.
+- **Ships in the Tyne are drawn in the river** (`inTheTyne()`, `riverSpot()`):
+  the further upriver, the further back up the channel; north bank on the
+  right, south bank on the left. That's often most of what AIS reports here:
+  the Shields ferries, the DFDS ferry at its berth, the Tyne tugs. The card
+  says "In the Tyne, 2.1 km upriver". Ships inside other harbours (the
+  wind-farm boats in Blyth) still aren't drawn: there's nowhere honest to put
+  them. The server sends up to 40 ships so port traffic doesn't crowd out the
+  ships at sea, and he only remarks on ships you can see.
 - **No nudging.** Ships used to be pushed apart when they overlapped; now each
   sits at its true position, and overlapping ships simply overlap, as they do
   at an anchorage. Hover picks the ship whose position is nearest the pointer.
   Between AIS updates a moving ship is dead-reckoned from its speed and
   course, at the map's true scale.
-- **Landmarks at their true positions** as reference points: St Mary's Island
-  and lighthouse 3.6 km north, right on the shore, and the Tyne piers 3 km
-  south, reaching about a kilometre out.
+- **Landmarks** as reference points: St Mary's Island and lighthouse (3.6 km
+  north, on the shore) and the Tyne piers with their lights (red on the South
+  Pier). Hover any of them, the river or the Priory for its name.
 - The hover card says where a ship is in the map's own terms ("3.4 km
   offshore, 1.2 km north"). The offline example boats have only a bearing and
   distance, so `boatLatLon()` works a position out from those.
