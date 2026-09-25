@@ -855,15 +855,43 @@
     return mix(c, '#f3a58e', curSky.glow * 0.55 * (1 - curSky.night * 0.5));
   }
 
+  // Pixel-art clouds: a flat bottom and a lumpy, stepped top, lit along the
+  // top edge and shaded underneath. (They used to be three overlapping
+  // circles apiece, which read as balls rather than cloud.) Each shape is a
+  // few overlapping humps as [centre, half-width, height] on a shared base.
+  const CLOUD_SHAPES = [
+    [[10, 12, 6], [24, 11, 10], [38, 12, 7], [50, 8, 4]],
+    [[8, 9, 5], [20, 12, 9], [33, 9, 6]],
+    [[10, 12, 7], [26, 14, 12], [42, 10, 8], [54, 9, 5]],
+    [[8, 10, 6], [22, 10, 8], [34, 11, 6]],
+  ];
+  function drawCloud(x0, baseY, shape0, col, k = 1){
+    const shape = shape0.map(([bx, hw, bh]) => [bx * k, hw * k, bh * k]);
+    const lo = Math.round(Math.min(...shape.map(b => b[0] - b[1]))), hi = Math.round(Math.max(...shape.map(b => b[0] + b[1])));
+    const light = shade(col, 0.07), dark = shade(col, -0.09);
+    for (let cx = lo; cx <= hi; cx++){
+      let h = 0;
+      for (const [bx, hw, bh] of shape){
+        const u = (cx - bx) / hw;
+        if (Math.abs(u) < 1) h = Math.max(h, bh * Math.sqrt(1 - u * u));
+      }
+      h = Math.round(h);
+      if (h < 1) continue;
+      const x = Math.round(x0 + cx);
+      rect(x, baseY - h, 1, h, col);
+      rect(x, baseY - h, 1, Math.min(2, h), light);          // sunlit top edge
+      if (h > 3) rect(x, baseY - 2, 1, 2, dark);              // flat, shaded underside
+    }
+  }
+
   function drawClouds(t, dense){
     const col = cloudColour();
-    const offsets = dense ? [0, 80, 180] : [20, 200];
-    offsets.forEach((o,i)=>{
-      const x = ((t*0.3 + o) % (W+80)) - 40;
-      const y = 28 + i*20;
-      blob(x, y, 10, col, false);
-      blob(x+16, y-4, 8, col, false);
-      blob(x-14, y+4, 9, col, false);
+    // Rain clouds are bigger and heavier than a fair-weather day's.
+    const offsets = dense ? [0, 120, 240, 360] : [40, 270];
+    const size = dense ? [1.7, 1.45, 1.6, 1.5] : [1.3, 1.15];
+    offsets.forEach((o, i) => {
+      const x = ((t * 0.3 + o) % (W + 180)) - 100;
+      drawCloud(x, 36 + (i % 3) * 12, CLOUD_SHAPES[i % CLOUD_SHAPES.length], col, size[i]);
     });
   }
 
@@ -1328,7 +1356,7 @@
     for (let k = 0; k < 5; k++) rect(Math.round(wx) - 17 + k * 8, Math.round(wy) - 13, 1, 13, '#5a4032');
     for (const [s, d, rr] of [[25.5, 41, 5], [26.5, 43.5, 4], [24.5, 44, 3]]){
       const [rx, ry] = beachPt(s, d);
-      blob(Math.round(rx), Math.round(ry) - rr + 2, rr, '#8f8a80');
+      rock(Math.round(rx), Math.round(ry) + 1, rr * 2 + 2, rr + 3, '#8f8a80', rr % 2 ? 1 : -1);
     }
     const [bx, by] = beachPt(26, 5);
     rect(Math.round(bx) - 3, Math.round(by) - 5, 6, 5, '#d94a3e'); rect(Math.round(bx) - 3, Math.round(by) - 6, 6, 1, PAL.outline);
@@ -1444,10 +1472,28 @@
 
   // St Mary's Island and its lighthouse, up the coast to the north: your right.
   const ISLAND = { x: 452, y: rowY(HIGH_WATER_S) + BEACH_DROP + 40 };
+  // An angular boulder sitting on (cx, by): a lit top facet, a shaded
+  // lower-right facet, the rest in its base colour, outlined dark. Faceted
+  // polygons rather than circles, filled crisp like the rooms.
+  function rock(cx, by, w, h, base, lean = 0){
+    const L = cx - w / 2, R = cx + w / 2;
+    const sil = [[L + 1, by], [L - 1, by - h * 0.45], [L + w * 0.22 + lean, by - h], [R - w * 0.3 + lean, by - h - 1], [R, by - h * 0.5], [R - 1, by]];
+    for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) fillPoly(sil.map(p => [p[0] + dx, p[1] + dy]), PAL.outline);
+    fillPoly(sil, base);
+    const mid = [cx + w * 0.08 + lean * 0.5, by - h * 0.42];
+    fillPoly([sil[1], sil[2], sil[3], sil[4], mid], shade(base, 0.12));
+    fillPoly([mid, sil[4], sil[5], [cx + 1, by]], shade(base, -0.14));
+  }
+
   function drawIsland(t){
     const { x, y } = ISLAND;
-    blob(x - 9, y, 7, '#7d776a'); blob(x + 8, y + 1, 6, '#7d776a'); blob(x, y - 2, 9, '#8a8474');
-    rect(x - 10, y - 8, 20, 3, '#6f9e5f');
+    // surf breaking along the foot of the rocks
+    for (let k = 0; k < 9; k++) rect(x - 30 + k * 7, y + 5 + ((k + Math.floor(t / 4)) % 2), 4, 1, PAL.seaFoam);
+    rock(x - 26, y + 6, 7, 4, '#7a7468');
+    rock(x - 17, y + 5, 14, 8, '#857e70', -1);
+    rock(x + 17, y + 6, 13, 7, '#7a7468', 1);
+    rock(x, y + 4, 34, 13, '#8f887a');                        // the island itself
+    fillPoly([[x - 12, y - 7], [x + 4, y - 9], [x + 13, y - 6], [x + 10, y - 4], [x - 10, y - 4]], '#6f9e5f');
     rect(x + 3, y - 14, 8, 6, PAL.outline); rect(x + 4, y - 13, 6, 5, '#eeeae0'); rect(x + 4, y - 15, 6, 2, '#8a3f30');   // keeper's cottage
     rect(x - 5, y - 35, 8, 28, PAL.outline); rect(x - 4, y - 34, 6, 27, '#f2eee4'); rect(x - 4, y - 34, 2, 27, '#fffdf6');
     rect(x - 6, y - 39, 10, 4, PAL.outline); rect(x - 3, y - 38, 4, 3, '#8f9aa0');
