@@ -1,11 +1,13 @@
 # Pixel Companion — Project Notes
 
-A small pixel-art desktop companion that lives in six scenes (home, cafe,
-work, bookstore, outside, beach), reacts to real weather in Whitley Bay, UK,
-watches real ships pass on the North Sea, and can hold a real conversation via
-a local Claude Code bridge. Originally built as
-a Claude.ai artifact; moved to Claude Code so it can keep growing and run as
-a real local app. Public repo: https://github.com/davidclose/pixel-companion
+A small pixel-art desktop companion living in an isometric diorama of the
+Whitley Bay seafront: four open-fronted rooms (home, bookshop, café, work)
+along a promenade, the beach below, and the North Sea in front, all on one
+screen. He walks between them. It reacts to the real weather, tide, sunrise
+and sunset, and moon phase; shows the real ships offshore; and can hold a real
+conversation via a local Claude Code bridge. Originally built as a Claude.ai
+artifact; moved to Claude Code so it can keep growing and run as a real local
+app. Public repo: https://github.com/davidclose/pixel-companion
 
 ## Running it
 
@@ -57,31 +59,18 @@ of real AI.
 Two files, no build step, no npm install:
 
 - **`pixel-companion.html`** — the entire app: HTML/CSS/JS in one file,
-  renders to a canvas scaled up with `image-rendering: pixelated`. All art is
-  drawn procedurally (`ctx.fillRect` / arcs) — no image assets, no sprite
-  sheets. **Native 320×240 logical space** (`const W = 320, H = 240`) with no
-  scale transform: every draw call uses those coordinates directly, which is
-  what gives the art its detail. (An earlier version drew in 160×120 and used
-  `ctx.scale(2,2)`; the art was rebuilt at true 320×240 instead, so any old
-  coordinates you see referenced elsewhere are roughly half these.)
+  rendering to a **480×360** canvas scaled up with `image-rendering:
+  pixelated`. The app is sized so the canvas lands at 720px, exactly 1.5×
+  (3× on a Retina screen, so every pixel stays crisp); the Electron window is
+  800 wide to fit it. All art is procedural: no image assets, no sprite sheets.
+  See **The isometric town** below for how the world is built.
 
-  The Stardew-Valley-ish look comes from a small set of shared primitives
-  rather than per-object hand-shading:
-  - `shade(hex, amt)` — lighten/darken any colour, so highlights and
-    shadows are derived from one base colour instead of hardcoded.
-  - `bevel(x,y,w,h,base,edge)` — light top/left edge, dark bottom/right.
-  - `block(x,y,w,h,base,edge)` — dark outline + bevel. The workhorse:
-    almost every solid object is a `block`.
-  - `blob(cx,cy,r,base,outline)` — outlined, shaded circle for organic
-    shapes (foliage, heads, clouds, sun).
-  - `paneCross`, `speckle`, `flower`, `smallTree`, `bookPile`,
-    `bookshelfWall` — scene-specific helpers built on the above.
+  The shading still comes from a few shared primitives: `shade(hex, amt)`
+  derives highlights and shadows from one base colour, `blob` draws outlined
+  shaded circles for foliage, clouds and the sun, and `rect`/`speckle`/`flower`
+  do small details. The isometric pieces are new: `iso()`, `fillPoly()` and
+  `isoBox()`.
 
-  Practical gotcha when placing furniture: an object's *visual* base must
-  line up with whatever it sits on, or it reads as floating. The seated
-  character sprite's base is `y+36` (seated legs end at `y+36`), so chair
-  seats are positioned to match; lamp stems must reach the table top or the
-  floor. Several passes were spent fixing exactly this.
 - **`companion-server.js`** — an optional local Node server (stdlib only,
   zero dependencies). Does two jobs: serves `pixel-companion.html` itself
   over HTTP, and answers `POST /chat` by shelling out to the Claude Code CLI.
@@ -147,78 +136,65 @@ full moon, a moonless night. And he no longer says "Lovely bit of sun" at
 
 ### Night lighting
 
-Outdoor scenes (outside, beach, and the walk between places) don't darken
-themselves any more. They register light sources with `addLight()` as they
-draw, and `render()` calls `finishOutdoor()` **after** drawing him. That lays
-the night shade over everything, him included, then paints the lights back
-on top with additive blending (`'lighter'`) so they glow into the dark.
-Weather is drawn last, in front of the lights.
+Everything registers its light sources with `addLight()` as it draws, and
+`render()` calls `finishScene()` **after** drawing him. That lays the night
+shade over the whole diorama, him included, then paints the lights back on
+top with additive blending (`'lighter'`) so they glow into the dark. Weather
+is drawn last, in front of the lights.
 
-Before this, night was a flat tint drawn inside each scene *before* the
-character, so every window and lamp got dimmed with everything else while he
-stayed at full daylight brightness and looked pasted on. What now lights up:
+The effect at night is lit rooms glowing warm in a dark, rainy town. What
+lights up (`registerLamps()` and friends):
 
-- house, shop and office windows (`litWindow`), warm glass with mullions and
-  a halo on the wall;
-- the streetlamp, which now stands there by day too instead of appearing at
-  dusk, and throws a pool of light on the path;
+- every room, softly from within, plus its own lamps: home's table lamp and
+  the bearded dragon's heat lamp, the bookshop's floor lamp, the café's wall
+  light and counter, the office's desk lamp and the blue glow of its monitor
+  on him;
+- the two promenade lamp posts, each throwing a pool on the paving;
 - St Mary's lighthouse when its beam comes round;
 - **ships' navigation lights, from their real AIS state.** A vessel under way
   shows a white masthead light and a sidelight; one at anchor or moored shows
-  only a white anchor light. Looking east at north/south traffic, a ship
-  heading right has its green starboard side toward you, one heading left its
-  red port side. The glow is kept small on purpose: at first a near ship's
-  light blew out into a white disc bigger than the ship.
+  only a white anchor light. You're looking west at north/south traffic from
+  the sea, so a northbound ship (heading right) shows its green starboard
+  side and a southbound one its red port side. The glow is kept small on
+  purpose: at first a near ship's light blew out into a disc bigger than the
+  ship.
 
-Interiors go through the same `finishScene()`, with a gentler shade: the
-room dims while its lamp throws a warm pool of light (home's table lamp, the
-café's pendant, the bookshop's floor lamp). The office, which had no light at
-all, got a desk lamp, and its monitors cast blue light on him. Monitors are
-glow-only, with no redraw, because he sits right in front of the screen and a
-redraw would paint it over his head. More generally, any light whose redraw
-would land on him is skipped (`state.charBox`).
+Glow-only lights (no redraw) are used where a redraw could land on him, such
+as the monitor he sits right in front of; any light whose redraw would land
+on him is skipped anyway (`state.charBox`).
 
-Cost: frames still draw in 0.29 to 0.86 ms with all of this on.
-
-He also blinks: one frame every ~5 seconds (`state.tick % 29`), with a quick
-double blink every third time.
+He also blinks: one frame every ~5 seconds, with a quick double blink every
+third time.
 
 ### Render loop & behavior
 
-- A single `state` object holds current weather, location, transition flag,
-  and a tick counter. Redrawn every ~180ms via `setInterval` — no diffing,
-  the whole canvas just repaints each tick. Measured in the Opus 5.5 review,
-  that's cheap: 0.46-0.91 ms per frame depending on scene (340-880 canvas
-  calls), about half a percent of one core. Caching static layers in an
-  offscreen canvas would save a fraction of a millisecond, so it wasn't done.
+- **Everything that never moves is drawn once** into an offscreen canvas
+  (`buildStatic()`): the skyline, paving, every room with its furniture, the
+  promenade props, sea wall and sand. Each frame copies it, then adds only
+  what's live: sky, the view through the windows, sea and tide, ships, café
+  steam, him, lighting and weather. That keeps a frame at 0.64-0.73 ms on the
+  bigger canvas. The static layer is transparent where the sky, the sea and
+  the window panes show through.
+- Frames are scheduled rather than on a fixed interval: every 80 ms while
+  he's walking so he moves smoothly, 160 ms when he's settled. Movement and
+  animation run off real elapsed time, so speeds don't change with the rate.
 - **Drawing stops while the window is hidden** (`syncRendering()` on
-  `visibilitychange`). It used to keep repainting at the same rate in the
-  tray, measured at ~3% CPU hidden, the same as visible. Boat polling pauses
-  too; the server keeps listening to AIS regardless, so the vessel cache still
-  learns while he's out of sight. A page that loads hidden stays blank until
-  shown, which is harmless since nobody can see it.
-- Five scene functions (`drawHome`, `drawCafe`, `drawWork`, `drawBookstore`,
-  `drawOutside`) each take `(tick, weatherState, isDay)` and draw their
-  background, then `drawCharacter(x, y, frame, seated, facingLeft)` draws
-  him on top. Adding a location means: a `draw*` function, an entry in
-  `LOCATIONS`, a case in `render()`'s if/else chain for placement, an entry
-  in `SPEECH`, and a weight in `preferredLocations()`.
-- The outside scene shows four buildings side-by-side (house, bookstore,
-  cafe, work) sharing one path. The spacing is hand-tuned so the roof
-  overhangs never collide — `drawTriRoof` spans `x-8 .. x+w+8`, wider than
-  the wall block, and the path sits exactly in the gap between the bookstore
-  and cafe roofs. Adding a fifth building means re-spacing the whole row,
-  not just appending one.
+  `visibilitychange`), measured at ~3% CPU hidden before, ~0% after. Boat
+  polling pauses too; the server keeps listening to AIS regardless.
 - A weighted rule table (`preferredLocations()`) picks where he'd rather be
-  based on weather + time of day (bookstore weighted into rainy/foggy/cloudy
-  as a cosy indoor option); a 45s timer rerolls it if idle, or the "Nudge
-  him" button forces a reroll. Moving between locations always plays a
-  walk-across-outside animation, regardless of actual origin/destination
-  (kept simple on purpose).
+  from the weather and time of day; a 45s timer rerolls it if he's idle, the
+  "Nudge him" button forces one, and **you can click any place** (hover shows
+  its name) to send him there. `goTo()` builds a real route: back out the way
+  he came (through the door, or up the beach steps), along the promenade
+  lane, and in. At the beach he wanders the sand every so often.
+- Adding a place means: an entry in `LOCATIONS`, `SPEECH` and
+  `preferredLocations()`; for a room, an entry in `ROOM_STYLE` plus a
+  `furnish*` function (the row of rooms would need re-spacing); for an
+  outdoor spot, an entry in `PLACES` with its route.
 - Weather comes from `https://api.open-meteo.com/v1/forecast` for Whitley
-  Bay (55.0393, -1.4472), refreshed every 30 minutes, mapped from WMO codes
-  to six states (sunny/cloudy/foggy/rainy/snowy/night — night is a flag on
-  top of the other five, from the API's `is_day`, not a separate code).
+  Bay (55.0393, -1.4472), refreshed every 30 minutes and mapped from WMO
+  codes to sunny/cloudy/foggy/rainy/snowy. Day and night come from the clock
+  against the real sunrise and sunset (see Time of day).
 
 ### Chat: two backends, one UI
 
@@ -349,42 +325,67 @@ fixed one, or a near vessel ends up beached on the sand at low water.
 He'll comment on it too — locally in speech bubbles, and via the chat bridge,
 which now receives the tide state alongside weather and location.
 
-### The beach scene
+### The isometric town
 
-Bands: sky `0..108`, sea `108..178`, wet sand `178..190`, dry sand `190..240`.
-St Mary's Island sits low and hazy off to the north (your left), its light
-turning at night.
+**The world.** One iso grid for everything: world units are floor tiles (x
+runs down-right on screen, y down-left) and z is height in pixels.
+`iso(x, y, z)` projects to the screen with 16×8 tiles (2:1); `rowY(s)` gives
+the screen row where x+y = s, and `atRow(s, d)` builds a point from x+y and
+x-y, which is handy because rows of constant x+y run straight across the
+screen.
 
-Two mappings put a real vessel on screen, and both needed tuning against the
-actual data rather than first principles:
+**The rooms** are square (6 tiles), each 6 further along x and 6 further back
+along y than the last. That staggers them into a straight row across the
+screen, and it's the key layout decision: in an iso view a room's back-left
+wall hides whatever is behind it for about four tiles, so rooms placed
+side by side on the grid would each hide half of their neighbour. Staggered
+like this they touch only at a corner and nothing is ever hidden. Each has
+two full-height back walls (brick ends, a coloured wall top), low front walls
+cut dollhouse-style with a doorway in the front-right one, and furniture only
+along the back, so he's always in front of it and draw order stays simple.
+The front walls are drawn again on top of him when he's inside
+(`stubLayers`), since they're between him and you.
 
-- **Bearing to x.** You face east, so north (0°) is on your left and south
-  (180°) on your right. A literal half-circle map looked obvious and was
-  wrong: local traffic bunches into the Tyne mouth at ~170-190° and the run
-  north past St Mary's at ~340-360°, so every boat clamped to the two edges of
-  the canvas in a heap. `VIEW_ARC` is 120° either side of east instead, which
-  spreads both clusters into view.
-- **Distance to y and size.** Far boats sit high and small near the horizon.
-  A flat 0-22 km ratio also failed, because real vessels here are 3-12 km out
-  and landed in a single band halfway up the water. The curve is
-  `(min(d,16)/16) ** 0.7`, which stretches that common range across the sea.
+**Outdoors,** from the back: a hazy skyline of the rest of the town (with the
+Spanish City dome), the promenade (lamp posts, a bench, a red postbox, trees,
+a planter), white railings and the sea wall with steps down, the beach
+(windbreak, rocks, a bucket, all kept clear of where he strolls), the tide
+line, and the sea with St Mary's lighthouse on its island to the right.
 
-Even so, ships queueing for the same river mouth overlap, so after placement a
-pass nudges apart any two at a similar depth. It's a small visual liberty, and
-the alternative is boats stacked invisibly on top of each other.
+**Crisp polygons.** Canvas paths antialias their edges, which smears the
+stair-stepped 2:1 lines iso pixel art depends on. `fillPoly()` fills convex
+polygons row by row in whole pixels instead; `isoBox()` builds a box from
+three such faces (top, lit +y side, shaded +x side) with an automatic dark
+outline.
 
-`drawBoat` picks a silhouette per category — container stacks for cargo, tiered
-white superstructure for ferries, a tall wheelhouse on a stubby hull for tugs,
-mast and derrick for fishing boats, a triangular sail for yachts. Vessels on a
-westerly course are mirrored so they face the way they're actually steaming.
+**Weather stays outdoors.** Rain, snow and fog are drawn into their own layer
+(`drawOutdoorWeather()`), and every room's silhouette is cut out of it before
+it goes on screen. So it rains on the sky, promenade, beach and sea, and
+never inside. You still see it through the windows: each pane is left
+transparent in the static layer and the live sky, rain included, is painted
+behind it (`drawWindowViews()`). Bad weather also greys the sky and clouds,
+and only the sky.
 
-**Hovering.** `drawBeach` records a hit box per boat each frame into
-`state.boatHits`, in the canvas's own 320×240 space; pointer coordinates are
-scaled back into that space before testing, since the canvas is stretched to
-fit. The card is built with `textContent`, never `innerHTML` — vessel names
-arrive off a public radio feed and must never be able to act as markup. Tapping
-works too, for touch. With no live data the sea falls back to fixed example
-boats, and the card says so explicitly rather than passing them off as real.
+**Him.** Sprites are small pixel maps (`HERO`), stacked from parts (a front,
+side or back head; a front or back body; standing, two walking or two seated
+leg sets) and given a dark outline automatically, then cached as tiny
+canvases. Walking picks front, back or a three-quarter side view from the
+direction he's moving on screen, mirrored for left. He sits in the armchair,
+at the café table, on the promenade bench, and at his desk with his back to
+you. The speech bubble follows him, anchored over his head and kept inside
+the frame.
+
+**Ships.** You face west from the water, so north (0°) is on your right and
+south (180°) on your left. The bearing arc is 120° either side of east:
+traffic bunches at the Tyne mouth (~170-190°) and north past St Mary's
+(~340-360°), and a literal half circle piled every ship onto the two edges.
+Distance runs down the water, close in near the beach and far out at the
+front, on the curve `(min(d,16)/16) ** 0.7`, because real vessels here sit
+3-12 km out. A pass nudges apart ships queueing at the same spot so each
+stays hoverable. `drawBoat` picks a silhouette per category, and a ship is
+mirrored to face the way it's steaming. Hover or tap one for its card (built
+with `textContent`: names come off a public radio feed). With no live data,
+example boats are shown and labelled as examples.
 
 **He can talk about the ships.** `describeBoats()` in `companion-server.js`
 appends a short plain-language list of what's currently in view to the chat
@@ -474,10 +475,11 @@ Implementation notes:
   only every ~6 minutes, whereas positions arrive every few seconds. A short
   `node boat-source.js 45` run will show mostly `unknown`; that's expected, and
   self-corrects once the server has been running a while.
-- **`drawCharacter`'s `facingLeft` mirror was broken until the Opus 5.5
-  review** — it translated by `x*2` and then negated `x`, landing him at
-  roughly `3x`. It never showed because nothing passes `true`. It now mirrors
-  about the sprite's own centre line (`x+12`), matching how the boats flip.
+- **Keep furniture against the back walls.** He's drawn after the static
+  layer, so anything placed where he could walk *behind* it would be drawn
+  under him. Every room is laid out so his spots and routes are in front of
+  all its furniture, and street props sit behind the promenade lane or clear
+  of the rooms' front walls. Moving one means checking that still holds.
 - **A bad aisstream key looks like a network failure.** aisstream accepts the
   WebSocket first and only then validates your subscription, so a wrong key
   shows up as an immediate close with no data. `boat-source.js` detects this
@@ -517,6 +519,9 @@ Implementation notes:
   first time too, to download `electron-builder`'s DMG-building helper.
 
 ## Ideas discussed for next steps
+
+- Other people on the promenade (dog walkers, a jogger), and seagulls.
+- Show his room names on the building fronts, not just on hover.
 
 - Moonrise/moonset, so the moon is only up when it really is (needs an
   astronomy calculation or API; the phase alone is done).

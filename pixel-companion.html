@@ -30,7 +30,7 @@
   }
   .app{
     width: 100%;
-    max-width: 560px;
+    max-width: 746px;   /* canvas lands at 720px: 1.5x its 480 pixels, 3x on Retina */
   }
   .title{
     font-family:'Press Start 2P', monospace;
@@ -63,32 +63,33 @@
   }
   .speech{
     position:absolute;
-    top: 14px;
-    left: 14px;
-    right: 14px;
-    max-width: 70%;
+    left: 0; top: 0;
+    width: max-content;
+    max-width: 230px;
     background: var(--cream);
     color: #1c2f3d;
     font-family: 'Space Mono', monospace;
     font-size: 12px;
     font-weight: 700;
-    padding: 8px 10px;
+    padding: 7px 10px;
     border-radius: 6px;
     border: 2px solid var(--edge);
     opacity: 0;
-    transform: translateY(-4px);
+    transform: translate(-50%, calc(-100% - 12px));
     transition: opacity 0.35s ease, transform 0.35s ease;
     pointer-events:none;
+    z-index: 4;
   }
   .speech::after{
     content:"";
     position:absolute;
-    bottom:-8px; left: 18px;
+    bottom:-8px; left: var(--tail, 50%);
+    margin-left: -6px;
     border-width: 8px 6px 0 6px;
     border-style: solid;
     border-color: var(--cream) transparent transparent transparent;
   }
-  .speech.show{ opacity:1; transform: translateY(0); }
+  .speech.show{ opacity:1; transform: translate(-50%, calc(-100% - 8px)); }
 
   /* Hover card for a ship on the sea. */
   .boat-tip{
@@ -215,7 +216,7 @@
   <p class="subtitle">Living quietly in Whitley Bay, weather and all</p>
 
   <div class="frame">
-    <canvas id="scene" width="320" height="240"></canvas>
+    <canvas id="scene" width="480" height="360"></canvas>
     <div class="speech" id="speech"></div>
     <div class="boat-tip" id="boatTip"></div>
   </div>
@@ -248,12 +249,12 @@
 <script>
 (function(){
   const canvas = document.getElementById('scene');
-  const ctx = canvas.getContext('2d');
+  let ctx = canvas.getContext('2d');   // let: pointed at offscreen layers while they're built
   ctx.imageSmoothingEnabled = false;
   // Native 320x240 logical space — no scale transform. Every draw call below
   // works in these coordinates directly, which is what gives the art its
   // detail (twice the addressable resolution per axis vs the old 160x120).
-  const W = 320, H = 240;
+  const W = 480, H = 360;
 
   function shade(hex, amt){
     const c = hex.replace('#','');
@@ -296,7 +297,9 @@
     sandWet: '#b79a72', pebble: '#9c8a72', headland: '#3d4a44', headlandFar: '#7d9099',
     hullRed: '#a8433a', hullBlue: '#2f4a6b', hullBlack: '#1f1c1a', hullGrey: '#59686b',
     hullWhite: '#e4e0d4', superWhite: '#efeade', boatWindow: '#2b3f52',
-    funnelRed: '#c4553f', mast: '#8a7a58', sail: '#f2ece0'
+    funnelRed: '#c4553f', mast: '#8a7a58', sail: '#f2ece0',
+    // promenade
+    street: '#cfc3a6', streetLine: '#b8aa89', kerb: '#9b8d72', seaWall: '#b3a996', seaWallDark: '#8f8676', rail: '#e9eef0'
   };
 
   function rect(x,y,w,h,color){ ctx.fillStyle=color; ctx.fillRect(x,y,w,h); }
@@ -351,14 +354,20 @@
   const state = {
     weather: { code: 3, temp: 12, isDay: 1, ok: false },
     location: 'home',       // home | outside | cafe | work | bookstore | beach
-    transitioning: false,
+    pos: null,              // where he is in the world, in tiles (set once the world exists)
+    walking: false,
+    path: [],               // waypoints still to walk
+    walkTo: null,           // where he's heading, or null for an idle stroll
+    facing: 'front',        // front | back | side, while walking
+    flip: false,            // mirrored: facing left
+    charBox: null, heroScreen: null,
     animFrame: 0,
     speechTimer: 0,
     tick: 0,
     boats: [],            // vessels currently drawn on the sea
     boatsLive: false,     // true when these are real AIS positions
     boatsAt: Date.now(),  // when they were fetched, for between-update drift
-    boatHits: [],         // hover targets, rebuilt every frame by drawBeach
+    boatHits: [],         // hover targets, rebuilt every frame by drawShips
     tide: null,           // { norm, rising, metres } once the tide is known
     tideSeries: null,     // hourly sea-level samples we interpolate between
   };
@@ -429,7 +438,7 @@
     const when = { dawn: 'Dawn', dusk: 'Dusk', day: 'Daytime', night: 'Night' }[sky.phase] + ' in Whitley Bay';
     const tw = tideWord();
     document.getElementById('timeText').textContent = tw ? `${when} · ${tw}` : when;
-    document.getElementById('locPill').textContent = state.location.toUpperCase();
+    document.getElementById('locPill').textContent = (state.walking && state.walkTo) ? 'WALKING…' : state.location.toUpperCase();
   }
 
   // ---------- behavior ----------
@@ -552,6 +561,7 @@
     const el = document.getElementById('speech');
     el.textContent = text;
     el.classList.add('show');
+    placeSpeech();
     clearTimeout(state.speechTimer);
     state.speechTimer = setTimeout(()=> el.classList.remove('show'), 4200);
   }
@@ -566,25 +576,21 @@
   }
 
   function maybeRelocate(force){
-    if (state.transitioning) return;
+    if (state.walking) return;
     if (!force && Math.random() < 0.45) return; // sometimes he just stays put
     const pool = preferredLocations();
-    let next = pool[Math.floor(Math.random()*pool.length)];
-    if (next === state.location && !force) return;
+    const next = pool[Math.floor(Math.random()*pool.length)];
     if (next === state.location) return;
     goTo(next);
   }
 
+  // He actually walks there now: back out to the promenade the way he came
+  // (through the door, or up the beach steps), along it, and in.
   function goTo(next){
-    state.transitioning = true;
-    document.getElementById('locPill').textContent = 'WALKING…';
-    setTimeout(()=>{
-      state.location = next;
-      state.transitioning = false;
-      if (next === 'beach') fetchBoats();   // arrive to an up-to-date sea
-      updateStatusUI();
-      showSpeech(pickSpeech());
-    }, 2600);
+    if (!next || (state.walking && state.walkTo)) return;   // already on his way somewhere
+    if (next === state.location && !state.walking) return;
+    const out = routeTo(state.location).slice(0, -1).reverse();
+    startWalk([...out, ...routeTo(next)], next);
   }
 
   // ---------- tide ----------
@@ -767,8 +773,6 @@
   }
 
   // ---------- drawing helpers ----------
-  // Day sky, with night faded in over it and sunset colour over that, so the
-  // sky (and the view through every window) passes through dusk properly.
   function skyGradient(x,y,w,h){
     const s = curSky;
     const g = ctx.createLinearGradient(0,y,0,y+h);
@@ -801,25 +805,29 @@
     ctx.globalAlpha = 1;
   }
 
-  // The sun sits in its usual place by day and sinks to the horizon (clipped
-  // there) around sunset, reddening; at dawn it comes up the same way.
-  function drawSun(horizonY, facesEast){
+  // You're looking west, from the sea back at the town, so the sun sets behind
+  // the rooms: it sinks out of sight behind them and the skyline. At dawn it's
+  // rising behind you, so instead it fades into its daytime place as the
+  // morning goes on.
+  const SUN_X = 330, SUN_TOP = 40;
+  function drawSun(horizonY){
     const s = curSky;
-    if (s.event === 'set'  && s.sinceEvent > 3*MIN) return;    // gone down
-    if (s.event === 'rise' && s.sinceEvent < -3*MIN) return;   // not up yet
-    // From the beach you face east over the sea: the sun comes up out of it
-    // at dawn, but in the evening it's setting behind you.
-    if (facesEast && s.event === 'set' && s.lift < 1) return;
-    const y = Math.round(horizonY - 4 - s.lift * (horizonY - 4 - 44));
+    if (s.event === 'set' && s.sinceEvent > 3*MIN) return;   // gone down
+    const morning = s.event === 'rise';
+    const alpha = morning ? s.lift : 1;
+    if (alpha <= 0.02) return;
+    const lift = morning ? 1 : s.lift;
+    const y = Math.round(horizonY - 4 - lift * (horizonY - 4 - SUN_TOP));
     ctx.save();
+    ctx.globalAlpha = alpha;
     ctx.beginPath(); ctx.rect(0, 0, W, horizonY); ctx.clip();
-    blob(256, y, 20, mix(PAL.sun, '#ff7b3a', s.glow * 0.9));
+    blob(SUN_X, y, 18, mix(PAL.sun, '#ff7b3a', s.glow * 0.9));
     ctx.restore();
   }
 
   // Pixel moon in its real phase: each row lit from the terminator to the
   // limb, the dark side faintly visible, a few craters on the lit part.
-  const MOON_X = 262, MOON_Y = 36, MOON_R = 9;
+  const MOON_X = 412, MOON_Y = 30, MOON_R = 9;
   function drawMoon(p){
     const k = Math.cos(2 * Math.PI * p), waxing = p < 0.5;
     const craters = [[-3,-2],[2,3],[3,-4],[-1,4],[-4,2]];
@@ -839,8 +847,11 @@
     }
   }
 
+  // Set each frame: rain clouds are grey, not the white of a fair-weather day.
+  let curWeather = 'cloudy';
   function cloudColour(){
-    const c = mix(PAL.cloud, '#4a5468', curSky.night);   // slate grey at night
+    const base = curWeather === 'rainy' ? '#a3adb6' : curWeather === 'snowy' ? '#d9dee4' : curWeather === 'foggy' ? '#c8cfd4' : PAL.cloud;
+    const c = mix(base, '#4a5468', curSky.night);        // slate grey at night
     return mix(c, '#f3a58e', curSky.glow * 0.55 * (1 - curSky.night * 0.5));
   }
 
@@ -856,10 +867,9 @@
     });
   }
 
-  // Everything above an outdoor horizon, for any time of day. Stars and moon
-  // only where the sky is actually clear: a rainy night used to show a sky
-  // full of stars.
-  function drawSkyDetails(t, w, horizonY, facesEast){
+  // Everything in the sky, for any time of day. Stars and moon only where the
+  // sky is actually clear: a rainy night used to show a sky full of stars.
+  function drawSkyDetails(t, w, horizonY){
     const s = curSky, clear = w === 'sunny', cloudy = w === 'cloudy';
     const starA = s.night * (clear ? 1 : cloudy ? 0.35 : 0);
     if (starA > 0.03) drawStars(t, starA);
@@ -868,542 +878,598 @@
       drawMoon(p);                                   // behind any clouds
       if (clear && lampsOn()) addLight(MOON_X, MOON_Y, 30, '200,215,255', 0.18 * moonLit(p), () => drawMoon(p));
     }
-    if (clear && s.night < 0.6) drawSun(horizonY, facesEast);
+    if (clear && s.night < 0.6) drawSun(horizonY);
     if (!clear) drawClouds(t, !cloudy);
   }
 
-  function drawRain(t){
-    ctx.strokeStyle = PAL.rain; ctx.lineWidth = 2;
-    for(let i=0;i<40;i++){
-      const x = (i*23 + (t*8)%320) % W;
-      const y = (i*29 + (t*12)) % H;
-      ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x-4,y+10); ctx.stroke();
+  // ---------- the isometric town ----------
+  // One diorama: four open-fronted rooms side by side along a seafront
+  // promenade, the beach below the sea wall, and the sea in front. You're
+  // looking west from the water back at Whitley Bay, so north is on your right
+  // (St Mary's lighthouse) and south, toward the Tyne, on your left.
+  //
+  // World units are floor tiles (x runs down-right on screen, y down-left);
+  // z is height in screen pixels. The whole world sits on one iso grid, so
+  // every object, and him, shares the same projection and depth order.
+  const TW = 16, TH = 8;                        // a tile is 16x8 on screen (2:1)
+  const OX = 96, OY = 122;                      // where world (0,0) lands on screen
+  const iso = (x, y, z = 0) => [OX + (x - y) * (TW / 2), OY + (x + y) * (TH / 2) - z];
+  const rowY = (s) => OY + s * (TH / 2);        // screen y of the row where x+y = s
+  const atRow = (s, d, z = 0) => ({ x: (s + d) / 2, y: (s - d) / 2, z });   // from x+y and x-y
+
+  // Crisp convex polygon fill. Canvas paths antialias their edges, which
+  // smears the stair-stepped 2:1 lines iso pixel art depends on, so polygons
+  // are filled row by row with whole pixels instead.
+  function fillPolyOn(c, pts, color){
+    let minY = Infinity, maxY = -Infinity;
+    for (const p of pts){ if (p[1] < minY) minY = p[1]; if (p[1] > maxY) maxY = p[1]; }
+    c.fillStyle = color;
+    for (let yy = Math.ceil(minY - 0.5); yy <= Math.floor(maxY - 0.5); yy++){
+      const yc = yy + 0.5;
+      let lo = Infinity, hi = -Infinity;
+      for (let i = 0, n = pts.length; i < n; i++){
+        const a = pts[i], b = pts[(i + 1) % n];
+        if ((a[1] <= yc && b[1] > yc) || (b[1] <= yc && a[1] > yc)){
+          const x = a[0] + (yc - a[1]) * (b[0] - a[0]) / (b[1] - a[1]);
+          if (x < lo) lo = x;
+          if (x > hi) hi = x;
+        }
+      }
+      const xa = Math.round(lo), xb = Math.round(hi);
+      if (xb > xa) c.fillRect(xa, yy, xb - xa, 1);
+    }
+  }
+  const fillPoly = (pts, color) => fillPolyOn(ctx, pts, color);
+
+  function pointInPoly(px, py, pts){
+    let inside = false;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++){
+      const [xi, yi] = pts[i], [xj, yj] = pts[j];
+      if ((yi > py) !== (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+  }
+
+  // An axis-aligned box: its top, the +y face (lit, facing down-left) and the
+  // +x face (in shade, facing down-right), with a dark outline around the lot.
+  function isoBox(x, y, z, w, d, h, base, o = {}){
+    if (o.outline !== false){
+      const sil = [iso(x, y, z + h), iso(x + w, y, z + h), iso(x + w, y, z), iso(x + w, y + d, z), iso(x, y + d, z), iso(x, y + d, z + h)];
+      for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) fillPoly(sil.map(p => [p[0] + dx, p[1] + dy]), PAL.outline);
+    }
+    fillPoly([iso(x, y + d, z), iso(x + w, y + d, z), iso(x + w, y + d, z + h), iso(x, y + d, z + h)], o.left || base);
+    fillPoly([iso(x + w, y, z), iso(x + w, y + d, z), iso(x + w, y + d, z + h), iso(x + w, y, z + h)], o.right || shade(base, -0.14));
+    fillPoly([iso(x, y, z + h), iso(x + w, y, z + h), iso(x + w, y + d, z + h), iso(x, y + d, z + h)], o.top || shade(base, 0.10));
+  }
+
+  // --- layout ---
+  // Rooms are square, A tiles a side, each one A further along x and A further
+  // back along y than the last. That staggers them into a straight row across
+  // the screen and, crucially, means no room's walls hide any of its
+  // neighbour: adjacent rooms only touch at a corner.
+  const A = 6, WALL = 44, STUB = 7, T = 0.3;    // room size; back and front wall heights; wall thickness
+  const DOOR0 = 2.3, DOOR1 = 3.7;               // doorway in each room's front-right wall
+  const LANE = 14;                              // the promenade walkway, as x+y
+  const PROM_EDGE = 20;                         // the sea wall
+  const BEACH_DROP = 8;                         // the sand is this far below the promenade
+  const HIGH_WATER_S = 28;                      // high-water mark, as x+y
+  const SKY_LINE = rowY(6);                     // where the town's ground meets the sky
+
+  const ROOM_STYLE = {
+    home:      { wall: '#e2b48f', floor: '#a2714a', floorKind: 'planks',  ext: '#a65a45', cap: '#7a3f30', spot: [4.05, 4.85], seat: 5, pose: 'front' },
+    bookstore: { wall: '#7e9a78', floor: '#7a5234', floorKind: 'planks',  ext: '#6b5a45', cap: '#4a3628', spot: [4.6, 4.5],   seat: 0, pose: 'front' },
+    cafe:      { wall: '#efdcb6', floor: '#efe6d4', floor2: '#4a4040', floorKind: 'checker', ext: '#8a5a44', cap: '#3e2723', spot: [4.1, 4.3], seat: 6, pose: 'front' },
+    work:      { wall: '#a9b8c4', floor: '#5f6b77', floorKind: 'carpet',  ext: '#6c7a86', cap: '#3a4750', spot: [2.35, 3.05], seat: 6, pose: 'back' },
+  };
+
+  function roomOutline(ox, oy){
+    const X = ox + A, Y = oy + A;
+    return [iso(ox - T, Y, 0), iso(ox - T, Y, WALL), iso(ox - T, oy - T, WALL), iso(X, oy - T, WALL), iso(X, oy - T, 0), iso(X, Y, 0)];
+  }
+
+  const ROOMS = ['home', 'bookstore', 'cafe', 'work'].map((id, i) => {
+    const ox = A * i, oy = -A * i, st = ROOM_STYLE[id];
+    const P = (lx, ly, z = 0) => ({ x: ox + lx, y: oy + ly, z });
+    const doorOut = P(A + 0.9, 3);
+    return {
+      id, i, ox, oy, ...st,
+      spot: P(st.spot[0], st.spot[1]),
+      doorIn: P(A - 0.7, 3), doorOut,
+      lane: atRow(LANE, doorOut.x - doorOut.y),
+      silhouette: roomOutline(ox, oy),
+    };
+  });
+  const ROOM_BY_ID = Object.fromEntries(ROOMS.map(r => [r.id, r]));
+  const roomAt = (p) => ROOMS.find(r => p.x > r.ox && p.x < r.ox + A && p.y > r.oy && p.y < r.oy + A) || null;
+
+  // The two outdoor places. The bench sits in the gap between the bookshop and
+  // the café; the steps down to the sand are straight below it.
+  const BENCH = { x: 14.2, y: -3.8 };
+  const PLACES = {
+    outside: { lane: atRow(LANE, 18), via: [], spot: { x: 14.2, y: -3.55, z: 0 }, seat: 5, pose: 'front' },
+    beach:   { lane: atRow(LANE, 18), via: [atRow(19.4, 18, 0), atRow(21.4, 18, -BEACH_DROP)], spot: atRow(24, 18, -BEACH_DROP), seat: 0, pose: 'front' },
+  };
+  const placeInfo = (loc) => ROOM_BY_ID[loc] || PLACES[loc];
+
+  // lane entry -> ... -> where he settles
+  function routeTo(loc){
+    const r = ROOM_BY_ID[loc];
+    if (r) return [r.lane, r.doorOut, r.doorIn, r.spot];
+    const p = PLACES[loc];
+    return [p.lane, ...p.via, p.spot];
+  }
+
+  const LAMPS = [atRow(9, 6), atRow(9, 30)];
+
+  // --- walls ---
+  const onR = (r, u, v) => iso(r.ox + u, r.oy, v);   // back-right wall (y = oy), u along x
+  const onL = (r, u, v) => iso(r.ox, r.oy + u, v);   // back-left wall (x = ox), u along y
+  const wallQuad = (on, r, u, v, w, h) => [on(r, u, v), on(r, u + w, v), on(r, u + w, v + h), on(r, u, v + h)];
+  function wallPanel(on, r, u, v, w, h, color, border){
+    if (border) fillPoly(wallQuad(on, r, u - 0.15, v - 1, w + 0.3, h + 2), border);
+    fillPoly(wallQuad(on, r, u, v, w, h), color);
+  }
+
+  // Window panes are left transparent in the static layer; the live sky (and
+  // any rain or snow) is painted behind them every frame.
+  const WINDOW_PANES = [];
+  function wallWindow(on, r, u, v, w, h){
+    fillPoly(wallQuad(on, r, u - 0.2, v - 2, w + 0.4, h + 4), PAL.outline);
+    fillPoly(wallQuad(on, r, u - 0.14, v - 1, w + 0.28, h + 2), '#f2ece0');
+    fillPoly(wallQuad(on, r, u - 0.25, v - 3, w + 0.5, 2), '#d8d0c0');   // sill
+    const pane = wallQuad(on, r, u, v, w, h);
+    const xs = pane.map(p => p[0]), ys = pane.map(p => p[1]);
+    const bx = Math.floor(Math.min(...xs)), by = Math.floor(Math.min(...ys));
+    WINDOW_PANES.push({ pane, on, r, u, v, w, h,
+      bbox: [bx, by, Math.ceil(Math.max(...xs)) - bx, Math.ceil(Math.max(...ys)) - by] });
+  }
+  function drawMullions(p){
+    fillPoly(wallQuad(p.on, p.r, p.u + p.w / 2 - 0.09, p.v, 0.18, p.h), '#f2ece0');
+    fillPoly(wallQuad(p.on, p.r, p.u, p.v + p.h / 2 - 0.5, p.w, 1), '#f2ece0');
+  }
+
+  function drawRoomShell(r){
+    const { ox, oy } = r, X = ox + A, Y = oy + A;
+    for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) fillPoly(r.silhouette.map(p => [p[0] + dx, p[1] + dy]), PAL.outline);
+
+    // floor
+    fillPoly([iso(ox, oy), iso(X, oy), iso(X, Y), iso(ox, Y)], r.floor);
+    if (r.floorKind === 'checker'){
+      for (let i = 0; i < A; i++) for (let j = 0; j < A; j++){
+        if ((i + j) % 2) fillPoly([iso(ox + i, oy + j), iso(ox + i + 1, oy + j), iso(ox + i + 1, oy + j + 1), iso(ox + i, oy + j + 1)], r.floor2);
+      }
+    } else if (r.floorKind === 'planks'){
+      for (let j = 0; j < A * 2; j++){
+        const c = j % 3 === 0 ? shade(r.floor, 0.05) : j % 3 === 1 ? r.floor : shade(r.floor, -0.05);
+        fillPoly([iso(ox, oy + j / 2), iso(X, oy + j / 2), iso(X, oy + (j + 1) / 2), iso(ox, oy + (j + 1) / 2)], c);
+        const k = ((j * 7) % 5) + 0.5;                  // a board end, staggered row to row
+        fillPoly([iso(ox + k, oy + j / 2), iso(ox + k + 0.12, oy + j / 2), iso(ox + k + 0.12, oy + (j + 1) / 2), iso(ox + k, oy + (j + 1) / 2)], shade(r.floor, -0.14));
+      }
+    } else {
+      for (let i = 0; i < 90; i++){
+        const [px, py] = iso(ox + ((i * 37) % 59) / 10, oy + ((i * 23) % 59) / 10);
+        rect(Math.round(px), Math.round(py), 1, 1, shade(r.floor, i % 2 ? 0.06 : -0.06));
+      }
+    }
+
+    // back walls: the left one faces +x, into shade; the right one faces +y, into the light
+    const wl = shade(r.wall, -0.10);
+    fillPoly([iso(ox, oy, 0), iso(ox, Y, 0), iso(ox, Y, WALL), iso(ox, oy, WALL)], wl);
+    fillPoly([iso(ox, oy, 0), iso(X, oy, 0), iso(X, oy, WALL), iso(ox, oy, WALL)], r.wall);
+    fillPoly([iso(ox, oy, 0), iso(ox, Y, 0), iso(ox, Y, 3), iso(ox, oy, 3)], shade(wl, -0.25));          // skirting
+    fillPoly([iso(ox, oy, 0), iso(X, oy, 0), iso(X, oy, 3), iso(ox, oy, 3)], shade(r.wall, -0.25));
+    const [cx, cy] = iso(ox, oy, 0);
+    rect(Math.round(cx), Math.round(cy - WALL), 1, WALL, shade(wl, -0.18));                          // the corner
+
+    // wall tops, and the brick ends where the walls stop
+    fillPoly([iso(ox - T, oy - T, WALL), iso(X, oy - T, WALL), iso(X, oy, WALL), iso(ox, oy, WALL)], r.cap);
+    fillPoly([iso(ox - T, oy - T, WALL), iso(ox, oy, WALL), iso(ox, Y, WALL), iso(ox - T, Y, WALL)], r.cap);
+    fillPoly([iso(X, oy - T, 0), iso(X, oy, 0), iso(X, oy, WALL), iso(X, oy - T, WALL)], shade(r.ext, -0.14));
+    fillPoly([iso(ox - T, Y, 0), iso(ox, Y, 0), iso(ox, Y, WALL), iso(ox - T, Y, WALL)], r.ext);
+  }
+
+  // Low front walls, the dollhouse cut. Kept in their own layer per room as
+  // well as the static one: when he's inside a room they're drawn again on
+  // top of him, since they're between him and you.
+  function drawStubs(r){
+    const { ox, oy } = r, X = ox + A, Y = oy + A;
+    isoBox(ox, Y - T, 0, A, T, STUB, r.ext);                              // front-left
+    isoBox(X - T, oy, 0, T, DOOR0, STUB, r.ext);                          // front-right, either side of the door
+    isoBox(X - T, oy + DOOR1, 0, T, A - DOOR1, STUB, r.ext);
+    const [mx, my] = iso(X + 0.55, oy + (DOOR0 + DOOR1) / 2);             // doormat
+    rect(Math.round(mx) - 5, Math.round(my) - 1, 10, 3, '#8a6a48');
+  }
+
+  // --- furniture ---
+  function spines(face, fixed, a0, a1, z, h, seed){
+    const cols = ['#a84a3e', '#4a7ba6', '#e0b13b', '#5c8a4a', '#8a5a44', '#7c5a9e', '#d98a4a', '#3f6b6b', '#e8dcc0'];
+    let a = a0, i = seed;
+    while (a < a1 - 0.12){
+      const wd = 0.22 + ((i * 7) % 3) * 0.06, hh = h - ((i * 5) % 3);
+      const q = face === 'x'
+        ? [iso(fixed, a, z), iso(fixed, a + wd, z), iso(fixed, a + wd, z + hh), iso(fixed, a, z + hh)]
+        : [iso(a, fixed, z), iso(a + wd, fixed, z), iso(a + wd, fixed, z + hh), iso(a, fixed, z + hh)];
+      fillPoly(q, cols[i % cols.length]);
+      a += wd + 0.05; i++;
     }
   }
 
-  function drawSnow(t){
-    for(let i=0;i<32;i++){
-      const x = (i*37 + Math.sin((t+i)/8)*10 + 320) % W;
-      const y = (i*17 + t*2) % H;
-      rect(x,y,2,2,PAL.snow);
+  // A bookcase against a back wall, open to the room and full of books.
+  function bookcase(r, along, a0, a1, depth, h, rows, seed){
+    const wood = '#6b4a30', inner = (h - 5) / rows;
+    if (along === 'y'){
+      isoBox(r.ox, r.oy + a0, 0, depth, a1 - a0, h, wood);
+      const fx = r.ox + depth;
+      for (let k = 0; k < rows; k++){
+        const z0 = 3 + k * inner, zh = inner - 2;
+        fillPoly([iso(fx, r.oy + a0 + 0.15, z0), iso(fx, r.oy + a1 - 0.15, z0), iso(fx, r.oy + a1 - 0.15, z0 + zh), iso(fx, r.oy + a0 + 0.15, z0 + zh)], '#2a1c14');
+        spines('x', fx, r.oy + a0 + 0.2, r.oy + a1 - 0.2, z0, zh, seed + k * 5);
+      }
+    } else {
+      isoBox(r.ox + a0, r.oy, 0, a1 - a0, depth, h, wood);
+      const fy = r.oy + depth;
+      for (let k = 0; k < rows; k++){
+        const z0 = 3 + k * inner, zh = inner - 2;
+        fillPoly([iso(r.ox + a0 + 0.15, fy, z0), iso(r.ox + a1 - 0.15, fy, z0), iso(r.ox + a1 - 0.15, fy, z0 + zh), iso(r.ox + a0 + 0.15, fy, z0 + zh)], '#2a1c14');
+        spines('y', fy, r.ox + a0 + 0.2, r.ox + a1 - 0.2, z0, zh, seed + k * 5);
+      }
     }
   }
 
-  function drawFogOverlay(){
-    rect(0,0,W,H,PAL.fog);
-  }
-
-  function drawTriRoof(x,y,w,color){
-    // dark outline silhouette first
-    ctx.fillStyle = PAL.outline;
-    ctx.beginPath();
-    ctx.moveTo(x-8,y+3); ctx.lineTo(x+w/2,y-26); ctx.lineTo(x+w+8,y+3);
-    ctx.closePath(); ctx.fill();
-    // roof face
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.moveTo(x-4,y); ctx.lineTo(x+w/2,y-22); ctx.lineTo(x+w+4,y);
-    ctx.closePath(); ctx.fill();
-    // sunlit slope (left half, lighter)
-    ctx.fillStyle = shade(color,0.18);
-    ctx.beginPath();
-    ctx.moveTo(x-4,y); ctx.lineTo(x+w/2,y-22); ctx.lineTo(x+w/2-6,y);
-    ctx.closePath(); ctx.fill();
-  }
-
-  function smallTree(x, baseY, r){
-    rect(x, baseY-18, 5, 18, '#4a3630');
-    blob(x+2, baseY-24, r, PAL.groundDark);
-    blob(x, baseY-28, r, '#5c8a4f');
-  }
-
-  // ---- night lighting (outdoor scenes) ----
-  // Night used to be one flat dark tint laid over the finished scene *before*
-  // he was drawn, so every lamp and window was dimmed along with everything
-  // else while he stayed at full daylight brightness, looking pasted on. Now
-  // outdoor scenes register their light sources as they draw; once he's on the
-  // canvas, finishScene() darkens everything, him included, then paints the
-  // lights back on top so they glow into the dark around them.
-  const lights = [];
-  function addLight(x, y, r, rgb, alpha, redraw){ lights.push({ x, y, r, rgb, alpha, redraw }); }
-
-  function glow(x, y, r, rgb, alpha){
-    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-    g.addColorStop(0, 'rgba(' + rgb + ',' + alpha + ')');
-    g.addColorStop(1, 'rgba(' + rgb + ',0)');
-    ctx.fillStyle = g;
-    ctx.fillRect(x - r, y - r, r * 2, r * 2);
-  }
-
-  const NIGHT_SHADE = 'rgba(8,12,26,0.46)';
-  const WARM = '255,196,120';
-
-  // A lit window: warm glass with thin mullions, and a halo on the wall.
-  function litWindow(x, y, w, h){
-    addLight(x + w/2, y + h/2, 18, WARM, 0.28, () => {
-      bevel(x, y, w, h, '#ffcf7a', 2);
-      const m = shade('#ffcf7a', -0.30);
-      rect(x + Math.floor(w/2), y, 1, h, m);
-      rect(x, y + Math.floor(h/2), w, 1, m);
+  function pile(r, lx, ly, z, heights){
+    const cols = ['#a84a3e', '#4a7ba6', '#e0b13b', '#5c8a4a', '#7c5a9e', '#8a5a44'];
+    let zz = z;
+    heights.forEach((h, k) => {
+      const inset = (k % 2) * 0.07;
+      isoBox(r.ox + lx + inset, r.oy + ly + inset, zz, 0.6, 0.45, h, cols[(k + Math.round(lx * 3)) % cols.length]);
+      zz += h;
     });
   }
 
-  // Runs after he's drawn, for every scene. Outdoors, golden-hour light
-  // warms everything around sunset and sunrise. As it gets dark the room or
-  // street is shaded, him included (indoors more gently: the lights are on),
-  // then the lights are painted back in, glowing. A light that would redraw
-  // on top of him is skipped, so a lamp never paints over his face.
-  function finishScene(t, w, outdoor){
-    const n = curSky.night;
-    if (outdoor && curSky.glow > 0.02){
-      rect(0, 0, W, H, 'rgba(255,150,80,' + (0.12 * curSky.glow * (1 - n)).toFixed(3) + ')');
+  function foliage(x, y, z, rad){
+    const [sx, sy] = iso(x, y, z);
+    blob(Math.round(sx), Math.round(sy - rad + 2), rad, PAL.leafGreen);
+  }
+
+  function furnishHome(r){
+    const B = (lx, ly, z, w, d, h, c, o) => isoBox(r.ox + lx, r.oy + ly, z, w, d, h, c, o);
+    const Q = (x0, y0, x1, y1, c) => fillPoly([iso(r.ox + x0, r.oy + y0), iso(r.ox + x1, r.oy + y0), iso(r.ox + x1, r.oy + y1), iso(r.ox + x0, r.oy + y1)], c);
+    Q(2.3, 2.9, 5.4, 5.7, PAL.rugRed); Q(2.6, 3.2, 5.1, 5.4, PAL.rugCream); Q(2.9, 3.5, 4.8, 5.1, PAL.rugRed);
+    wallPanel(onL, r, 0.9, 22, 1.7, 11, '#8fc3dc', PAL.woodDark);                 // a painting of the sea
+    fillPoly(wallQuad(onL, r, 0.9, 22, 1.7, 3), '#e2c99f');
+    fillPoly(wallQuad(onL, r, 0.9, 25, 1.7, 2), '#3f7fa6');
+    wallWindow(onR, r, 3.1, 25, 2.2, 13);
+    bookcase(r, 'x', 0.2, 1.9, 0.7, 30, 3, 1);
+    B(2.25, 0.2, 0, 0.6, 0.6, 7, '#8a5a44'); foliage(r.ox + 2.55, r.oy + 0.5, 7, 6);
+    // the bearded dragon's vivarium: cabinet, glass tank, sand, him, and his heat lamp
+    B(3.0, 0.15, 0, 2.4, 1.0, 10, PAL.woodMid);
+    B(3.0, 0.15, 10, 2.4, 1.0, 11, '#b9d0d4', { top: '#dcecef', right: '#a4bcc1' });
+    fillPoly([iso(r.ox + 3.0, r.oy + 1.15, 10), iso(r.ox + 5.4, r.oy + 1.15, 10), iso(r.ox + 5.4, r.oy + 1.15, 13), iso(r.ox + 3.0, r.oy + 1.15, 13)], '#d9b77a');
+    const [dx, dy] = iso(r.ox + 4.1, r.oy + 1.15, 13);
+    rect(Math.round(dx) - 3, Math.round(dy) - 2, 6, 2, PAL.dragonGreen); rect(Math.round(dx) + 3, Math.round(dy) - 3, 2, 2, PAL.dragonGreen);
+    rect(Math.round(dx) - 5, Math.round(dy) - 1, 2, 1, PAL.dragonGreen);
+    B(4.45, 0.45, 21, 0.5, 0.4, 3, '#3a3530');
+    // bed along the left wall
+    B(0.1, 3.4, 0, 2.0, 0.3, 14, PAL.woodDark);
+    B(0.1, 3.7, 0, 2.0, 2.2, 6, PAL.woodMid);
+    B(0.2, 3.75, 6, 1.8, 2.05, 3, '#f2ece0');
+    B(0.2, 4.6, 6, 1.8, 1.2, 4, '#c0574a');
+    B(0.45, 3.8, 9, 1.3, 0.6, 2, '#fbf6ea');
+    // side table and lamp, his armchair
+    B(2.55, 4.05, 0, 0.6, 0.6, 9, PAL.woodDark);
+    B(2.74, 4.24, 9, 0.22, 0.22, 5, '#3a2a1e');
+    B(2.6, 4.1, 14, 0.5, 0.5, 5, '#e0b13b');
+    B(3.4, 4.3, 0, 1.2, 1.2, 5, '#7e9c72');
+    B(3.4, 4.3, 5, 0.35, 1.2, 9, shade('#7e9c72', -0.08));
+    B(3.75, 4.3, 5, 0.85, 0.3, 5, shade('#7e9c72', -0.04));
+  }
+
+  function furnishBookstore(r){
+    const B = (lx, ly, z, w, d, h, c, o) => isoBox(r.ox + lx, r.oy + ly, z, w, d, h, c, o);
+    const Q = (x0, y0, x1, y1, c) => fillPoly([iso(r.ox + x0, r.oy + y0), iso(r.ox + x1, r.oy + y0), iso(r.ox + x1, r.oy + y1), iso(r.ox + x0, r.oy + y1)], c);
+    Q(1.7, 1.7, 4.6, 3.8, PAL.rugRed); Q(1.9, 1.9, 4.4, 3.6, PAL.rugCream);
+    bookcase(r, 'y', 0.2, 5.8, 0.75, 38, 4, 3);            // floor-to-ceiling along the left wall
+    bookcase(r, 'x', 0.8, 2.2, 0.75, 38, 4, 11);           // and either side of the big window
+    bookcase(r, 'x', 4.0, 5.8, 0.75, 38, 4, 19);
+    wallWindow(onR, r, 2.45, 8, 1.3, 30);
+    // the table, piled high
+    B(2.0, 2.0, 0, 2.2, 1.4, 10, PAL.woodMid);
+    pile(r, 2.15, 2.2, 10, [3, 2, 3, 2]); pile(r, 2.95, 2.35, 10, [2, 3, 2]); pile(r, 3.65, 2.15, 10, [3, 3]);
+    pile(r, 3.0, 4.6, 0, [3, 2, 3]);                       // and on the floor
+    // reading corner: floor lamp and chair
+    B(0.7, 3.7, 0, 0.65, 0.65, 2, '#3a2a1e');
+    B(0.95, 3.95, 2, 0.15, 0.15, 26, '#3a2a1e');
+    B(0.65, 3.65, 28, 0.75, 0.75, 6, '#e0b13b');
+    B(1.2, 4.7, 0, 1.1, 1.1, 5, '#8a4a3e'); B(1.2, 4.7, 5, 0.3, 1.1, 10, shade('#8a4a3e', -0.08));
+  }
+
+  function furnishCafe(r){
+    const B = (lx, ly, z, w, d, h, c, o) => isoBox(r.ox + lx, r.oy + ly, z, w, d, h, c, o);
+    wallPanel(onL, r, 1.0, 20, 2.4, 14, '#2a2320', PAL.woodDark);            // menu board
+    for (let k = 0; k < 4; k++) fillPoly(wallQuad(onL, r, 1.3, 23 + k * 2.6, 1.2 + (k % 2) * 0.6, 1), '#e8dcc0');
+    wallWindow(onL, r, 3.8, 18, 1.5, 16);
+    fillPoly(wallQuad(onR, r, 1.5, 30, 3.6, 1.4), PAL.woodDark);            // shelf of cups
+    for (let k = 0; k < 5; k++) fillPoly(wallQuad(onR, r, 1.75 + k * 0.7, 31.4, 0.35, 3), '#f2ece0');
+    fillPoly(wallQuad(onR, r, 0.55, 29, 0.45, 5), '#e0b13b');               // wall light
+    // counter, coffee machine, cake case, till
+    B(1.3, 0.1, 0, 4.4, 1.2, 14, '#5c3a26', { top: '#c9a06a' });
+    B(1.7, 0.3, 14, 0.8, 0.7, 9, '#b8c0c4');
+    B(1.85, 0.95, 16, 0.22, 0.16, 3, '#2a3238');
+    B(3.1, 0.3, 14, 1.4, 0.8, 7, '#d8ecf0', { top: '#eef8fa' });
+    for (let k = 0; k < 3; k++){
+      const [cx, cy] = iso(r.ox + 3.3 + k * 0.4, r.oy + 1.1, 16);
+      rect(Math.round(cx) - 1, Math.round(cy) - 2, 3, 2, ['#e8a0a8', '#c98a4a', '#f2ece0'][k]);
     }
-    if (n > 0.01){
-      rect(0, 0, W, H, 'rgba(8,12,26,' + ((outdoor ? 0.46 : 0.26) * n).toFixed(3) + ')');
-      const k = Math.min(1, n / 0.6);               // lights brighten as it darkens
-      ctx.save();
-      ctx.globalCompositeOperation = 'lighter';     // light adds, never darkens
-      for (const L of lights) if (L.r) glow(L.x, L.y, L.r, L.rgb, L.alpha * k);
-      ctx.restore();
-      for (const L of lights){
-        if (!L.redraw) continue;
-        const c = state.charBox;
-        if (c && L.x >= c.x && L.x <= c.x + c.w && L.y >= c.y && L.y <= c.y + c.h) continue;
-        L.redraw();
+    B(4.8, 0.35, 14, 0.6, 0.55, 5, '#2a3238');
+    // table and chairs
+    B(1.6, 3.3, 0, 0.7, 0.7, 6, '#5c3a26'); B(1.6, 3.3, 6, 0.2, 0.7, 9, '#4a2e1e');
+    B(2.5, 3.1, 0, 1.0, 1.0, 11, '#8a5a44', { top: '#b07a5a' });
+    B(2.9, 3.45, 11, 0.25, 0.25, 3, '#f2ece0');
+    B(3.7, 3.9, 0, 0.8, 0.8, 6, '#5c3a26'); B(3.7, 3.9, 6, 0.2, 0.8, 9, '#4a2e1e');
+    B(0.3, 5.0, 0, 0.6, 0.6, 7, '#8a5a44'); foliage(r.ox + 0.6, r.oy + 5.3, 7, 6);
+  }
+
+  function furnishWork(r){
+    const B = (lx, ly, z, w, d, h, c, o) => isoBox(r.ox + lx, r.oy + ly, z, w, d, h, c, o);
+    wallPanel(onR, r, 1.4, 22, 2.0, 12, '#a8845c', PAL.woodDark);            // cork board
+    fillPoly(wallQuad(onR, r, 1.6, 27, 0.5, 5), '#e8dcc0');
+    fillPoly(wallQuad(onR, r, 2.3, 25, 0.45, 4), '#f4a259');
+    fillPoly(wallQuad(onR, r, 2.6, 29, 0.55, 4), '#bcd8e8');
+    wallWindow(onR, r, 3.9, 22, 1.5, 14);
+    B(4.2, 0.1, 0, 1.4, 0.8, 19, '#8a98a4');                                 // filing cabinet
+    for (let k = 0; k < 3; k++) fillPoly([iso(r.ox + 4.35, r.oy + 0.9, 4 + k * 5), iso(r.ox + 5.45, r.oy + 0.9, 4 + k * 5), iso(r.ox + 5.45, r.oy + 0.9, 5 + k * 5), iso(r.ox + 4.35, r.oy + 0.9, 5 + k * 5)], '#5f6b77');
+    // desk against the left wall, monitor facing into the room
+    B(0.1, 1.3, 0, 1.6, 3.4, 12, '#4a5560', { top: '#7a8794' });
+    B(0.3, 2.9, 12, 0.3, 0.3, 3, '#2a3238');
+    B(0.3, 2.2, 15, 0.25, 1.7, 12, '#20262b');
+    const sx = r.ox + 0.55;
+    fillPoly([iso(sx, r.oy + 2.35, 16.5), iso(sx, r.oy + 3.75, 16.5), iso(sx, r.oy + 3.75, 25.5), iso(sx, r.oy + 2.35, 25.5)], '#4a7ba6');
+    for (let k = 0; k < 3; k++) fillPoly([iso(sx, r.oy + 2.55, 19 + k * 2.2), iso(sx, r.oy + 3.2 + (k % 2) * 0.3, 19 + k * 2.2), iso(sx, r.oy + 3.2 + (k % 2) * 0.3, 20 + k * 2.2), iso(sx, r.oy + 2.55, 20 + k * 2.2)], '#bcd8e8');
+    B(0.9, 2.4, 12, 0.35, 1.2, 1, '#2a3238');                                // keyboard
+    B(0.4, 3.95, 12, 0.5, 0.55, 6, '#3a4e5c');                               // laptop
+    B(1.2, 4.1, 12, 0.22, 0.22, 3, '#f2ece0');                               // coffee
+    B(0.3, 1.45, 12, 0.35, 0.35, 1, '#2a3238');                              // desk lamp
+    B(0.43, 1.58, 13, 0.1, 0.1, 10, '#3a4750');
+    B(0.2, 1.4, 23, 0.6, 0.5, 4, '#8a9aa6');
+    B(2.3, 3.0, 0, 0.12, 0.12, 4, '#2a3238');                                // his chair
+    B(1.95, 2.6, 4, 0.8, 0.9, 2, '#5b7c99');
+    B(0.2, 5.0, 0, 0.6, 0.6, 7, '#4a5560'); foliage(r.ox + 0.5, r.oy + 5.3, 7, 6);
+  }
+
+  // --- outdoors ---
+  function lampPost(p, lit){
+    isoBox(p.x - 0.1, p.y - 0.1, 0, 0.2, 0.2, 30, '#2a3238');
+    isoBox(p.x - 0.28, p.y - 0.28, 30, 0.56, 0.56, 6, lit ? '#ffd88a' : '#8a9aa6', { outline: !lit });
+    isoBox(p.x - 0.2, p.y - 0.2, 36, 0.4, 0.4, 2, '#2a3238');
+  }
+
+  function drawBench(){
+    const { x, y } = BENCH;
+    isoBox(x - 1.0, y - 0.25, 0, 0.12, 0.5, 4, '#3a3530'); isoBox(x + 0.88, y - 0.25, 0, 0.12, 0.5, 4, '#3a3530');
+    isoBox(x - 1.0, y - 0.25, 4, 2.0, 0.5, 1, '#8a5a3c');
+    isoBox(x - 1.0, y - 0.4, 5, 2.0, 0.12, 7, '#8a5a3c');
+  }
+
+  function tree(p){
+    isoBox(p.x - 0.15, p.y - 0.15, 0, 0.3, 0.3, 16, '#5a4032');
+    const [sx, sy] = iso(p.x, p.y, 16);
+    blob(Math.round(sx) - 4, Math.round(sy) - 4, 9, PAL.groundDark);
+    blob(Math.round(sx) + 4, Math.round(sy) - 7, 8, PAL.ground);
+    blob(Math.round(sx), Math.round(sy) - 12, 8, shade(PAL.ground, 0.08));
+  }
+
+  // The rest of Whitley Bay behind the rooms, hazy with distance: low hills,
+  // terraced rooftops, and the white dome of the Spanish City.
+  function drawSkyline(){
+    const base = SKY_LINE + 1;
+    for (let x = 0; x < W; x += 2){
+      const h = 12 + 4 * Math.sin(x / 37) + 3 * Math.sin(x / 13 + 1);
+      rect(x, Math.round(base - h), 2, Math.round(h), '#b3c7cc');
+    }
+    let x = -6, k = 0;
+    while (x < W){
+      const w = 22 + (k * 7) % 12, h = 10 + (k * 5) % 8;
+      rect(x, base - h, w, h, '#98afb8');
+      fillPoly([[x - 1, base - h], [x + w + 1, base - h], [x + w / 2, base - h - w / 3]], '#8aa2ac');
+      if (k % 2) rect(x + 4, base - h - 6, 3, 6, '#8aa2ac');
+      x += w + 3; k++;
+    }
+    rect(229, base - 18, 22, 18, '#dfe2da');
+    blob(240, base - 19, 10, '#eef0e8');
+    rect(239, base - 33, 2, 5, '#c9ccc4');
+  }
+
+  function drawStreet(){
+    const y0 = SKY_LINE, y1 = rowY(PROM_EDGE);
+    rect(0, y0, W, y1 - y0, PAL.street);
+    // paving joints every two tiles on both diagonals, as clean 2:1 steps
+    for (let yy = y0 + 2; yy < y1; yy++){
+      const a = ((OX - 2 * (yy - OY)) % 32 + 32) % 32;
+      const b = ((OX + 2 * (yy - OY)) % 32 + 32) % 32;
+      for (let x = a; x < W; x += 32) rect(x, yy, 2, 1, PAL.streetLine);
+      for (let x = b; x < W; x += 32) rect(x, yy, 2, 1, PAL.streetLine);
+    }
+    rect(0, y0, W, 2, PAL.kerb);
+  }
+
+  // The sea wall, its white railings, and the steps down to the sand.
+  const STEPS_X = OX + 18 * (TW / 2);
+  function drawPromenadeEdge(){
+    const top = rowY(PROM_EDGE);
+    rect(0, top, W, BEACH_DROP, PAL.seaWall);
+    rect(0, top, W, 1, shade(PAL.seaWall, 0.12));
+    rect(0, top + 4, W, 1, PAL.seaWallDark);
+    for (let x = 0; x < W; x += 12){ rect(x, top + 1, 1, 3, PAL.seaWallDark); rect(x + 6, top + 5, 1, 3, PAL.seaWallDark); }
+    for (let k = 0; k < 3; k++){
+      const y = top + k * 3, x0 = STEPS_X - 14 - k * 2, w = 28 + k * 4;
+      rect(x0, y, w, 3, shade(PAL.seaWall, 0.10 - k * 0.05));
+      rect(x0, y + 2, w, 1, PAL.seaWallDark);
+    }
+    const railY = top - 9;
+    for (let x = 4; x < W; x += 12){
+      if (x > STEPS_X - 18 && x < STEPS_X + 16) continue;
+      rect(x - 1, railY, 4, 10, PAL.outline); rect(x, railY, 2, 9, PAL.rail);
+    }
+    for (const [a, b] of [[0, STEPS_X - 16], [STEPS_X + 16, W]]){
+      rect(a, railY - 1, b - a, 4, PAL.outline); rect(a, railY, b - a, 2, PAL.rail);
+    }
+  }
+
+  const beachPt = (s, d) => { const p = atRow(s, d); return iso(p.x, p.y, -BEACH_DROP); };
+  function drawBeachSand(){
+    const y0 = rowY(PROM_EDGE) + BEACH_DROP, y1 = rowY(HIGH_WATER_S) + BEACH_DROP;
+    rect(0, y0, W, y1 - y0, PAL.sand);
+    rect(0, y0, W, 2, PAL.sandDark);
+    speckle(0, y0 + 3, W, y1 - y0 - 3, PAL.sandLight, 0.004, 3);
+    speckle(0, y0 + 3, W, y1 - y0 - 3, PAL.sandDark, 0.003, 9);
+    // a striped windbreak, some rocks, a bucket: all kept clear of where he strolls
+    const [wx, wy] = beachPt(23, -3);
+    for (let k = 0; k < 4; k++) rect(Math.round(wx) - 16 + k * 8, Math.round(wy) - 11, 8, 10, k % 2 ? '#f2ece0' : '#c0574a');
+    for (let k = 0; k < 5; k++) rect(Math.round(wx) - 17 + k * 8, Math.round(wy) - 13, 1, 13, '#5a4032');
+    for (const [s, d, rr] of [[25.5, 41, 5], [26.5, 43.5, 4], [24.5, 44, 3]]){
+      const [rx, ry] = beachPt(s, d);
+      blob(Math.round(rx), Math.round(ry) - rr + 2, rr, '#8f8a80');
+    }
+    const [bx, by] = beachPt(26, 5);
+    rect(Math.round(bx) - 3, Math.round(by) - 5, 6, 5, '#d94a3e'); rect(Math.round(bx) - 3, Math.round(by) - 6, 6, 1, PAL.outline);
+    rect(Math.round(bx) + 4, Math.round(by) - 9, 1, 9, '#e0b13b');
+  }
+
+  function drawStreetProps(){
+    LAMPS.forEach(p => lampPost(p, false));
+    drawBench();
+    tree(atRow(10, -10));
+    tree(atRow(10, 46));
+    const pb = atRow(9, -7);                                 // a red postbox
+    isoBox(pb.x - 0.25, pb.y - 0.25, 0, 0.5, 0.5, 13, '#c0392b');
+    isoBox(pb.x - 0.3, pb.y - 0.3, 13, 0.6, 0.6, 2, '#2a2320');
+    const pl = atRow(9.5, 44);                               // a planter of flowers
+    isoBox(pl.x - 0.6, pl.y - 0.25, 0, 1.2, 0.5, 5, '#8a5a44');
+    const [fx, fy] = iso(pl.x, pl.y, 5);
+    flower(Math.round(fx) - 5, Math.round(fy) - 8, PAL.flowerRed);
+    flower(Math.round(fx), Math.round(fy) - 9, PAL.flowerYellow);
+    flower(Math.round(fx) + 5, Math.round(fy) - 8, PAL.flowerWhite);
+  }
+
+  // Signs above the shops, standing on the back wall like a fascia.
+  function shopSign(r, color, icon){
+    const q = wallQuad(onR, r, 1.6, WALL + 1, 2.8, 11);
+    fillPoly(wallQuad(onR, r, 1.5, WALL, 3.0, 13), PAL.outline);
+    fillPoly(q, color);
+    const [cx, cy] = onR(r, 3.0, WALL + 6.5);
+    icon(Math.round(cx), Math.round(cy));
+  }
+  const cupIcon = (x, y) => { rect(x - 3, y - 2, 5, 4, '#f2ece0'); rect(x + 2, y - 1, 2, 2, '#f2ece0'); rect(x - 2, y - 5, 1, 2, '#f2ece0'); rect(x, y - 6, 1, 3, '#f2ece0'); };
+  const bookIcon = (x, y) => { rect(x - 4, y - 3, 4, 6, '#f2ece0'); rect(x + 1, y - 3, 4, 6, '#f2ece0'); rect(x, y - 3, 1, 6, '#c9b48a'); };
+
+  // --- the static layer ---
+  // Everything that never moves is drawn once into an offscreen canvas; each
+  // frame just copies it. Transparent where the sky, the sea and the window
+  // panes show through, since those are live.
+  let staticLayer = null;
+  const stubLayers = {};
+  function newLayer(){ const c = document.createElement('canvas'); c.width = W; c.height = H; return c; }
+  function drawInto(cv, fn){
+    const keep = ctx;
+    ctx = cv.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+    try { fn(); } finally { ctx = keep; }
+  }
+
+  function buildStatic(){
+    WINDOW_PANES.length = 0;
+    staticLayer = newLayer();
+    drawInto(staticLayer, () => {
+      drawSkyline();
+      drawStreet();
+      const furnish = { home: furnishHome, bookstore: furnishBookstore, cafe: furnishCafe, work: furnishWork };
+      for (const r of ROOMS){
+        drawRoomShell(r);
+        furnish[r.id](r);
+        drawStubs(r);
       }
-    }
-    lights.length = 0;
-    if (outdoor){                                    // weather falls in front of it all
-      if (w === 'rainy') drawRain(t);
-      if (w === 'snowy') drawSnow(t);
-      if (w === 'foggy') drawFogOverlay();
-    }
-  }
-
-
-  // ---- outside ----
-  // Four buildings share one row at 320 wide. The spacing is hand-tuned so the
-  // roof overhangs (drawTriRoof spans x-8 .. x+w+8) never collide, and the path
-  // sits exactly in the gap between the bookstore and cafe roofs.
-  function drawOutside(t, w, isDay){
-    skyGradient(0,0,W,144);
-    drawSkyDetails(t, w, 144, false);
-    // distant hills for depth (always there now; the night shade darkens them,
-    // rather than them vanishing at dusk)
-    ctx.fillStyle = 'rgba(92,138,79,0.5)';
-    ctx.beginPath(); ctx.arc(40,144,44,Math.PI,0); ctx.fill();
-    ctx.beginPath(); ctx.arc(300,144,52,Math.PI,0); ctx.fill();
-
-    // ground with grass texture
-    rect(0,144,W,H-144, PAL.ground);
-    rect(0,144,W,6, PAL.groundDark);
-    speckle(0,152,W,H-152, PAL.groundLight, 0.004, 1);
-    speckle(0,152,W,H-152, PAL.groundShade, 0.003, 5);
-
-    // path
-    rect(140,150,40,H-150, PAL.path);
-    rect(140,150,4,H-150, PAL.pathEdge);
-    rect(176,150,4,H-150, PAL.pathEdge);
-
-    // house (left)
-    block(6,96,54,54, PAL.houseWall, 3);
-    drawTriRoof(6,96,54, PAL.houseRoof);
-    block(12,72,8,16,'#5c4a3a',2); // chimney
-    if (curSky.night < 0.5 && (w==='sunny' || w==='cloudy')){
-      ctx.fillStyle = PAL.smoke;
-      const puff = (t*0.4)%40;
-      ctx.beginPath(); ctx.arc(16, 68-puff*0.5, 4+puff*0.12, 0, Math.PI*2); ctx.fill();
-    }
-    block(13,104,12,12, PAL.windowGlass, 2);
-    if (lampsOn()) litWindow(13,104,12,12);
-    block(41,104,12,12, PAL.windowGlass, 2);
-    if (lampsOn()) litWindow(41,104,12,12);
-    block(26,120,18,30, PAL.doorBrown, 2);
-    rect(29,136,3,3,'#e0b13b'); // doorknob
-    // window flower box
-    rect(11,118,16,5,'#6f5438');
-    flower(14,113,PAL.flowerRed); flower(21,113,PAL.flowerYellow);
-
-    // bookstore
-    block(80,92,50,58, PAL.bookWallExt, 3);
-    drawTriRoof(80,92,50, PAL.bookRoofExt);
-    block(84,80,42,10, PAL.bookSign, 2);
-    block(86,102,14,14, PAL.windowGlass, 2);
-    if (lampsOn()) litWindow(86,102,14,14);
-    block(104,120,18,30, PAL.doorBrown, 2);
-
-    // cafe
-    block(188,88,54,62, PAL.cafeWall, 3);
-    drawTriRoof(188,88,54, PAL.cafeRoof);
-    block(194,80,42,10, PAL.cafeSign, 2);
-    block(194,100,12,12, PAL.windowGlass, 2);
-    if (lampsOn()) litWindow(194,100,12,12);
-    block(226,100,12,12, PAL.windowGlass, 2);
-    if (lampsOn()) litWindow(226,100,12,12);
-    block(206,120,24,30, PAL.doorBrown, 2);
-
-    // work (far right)
-    block(258,80,46,70, PAL.workWall, 3);
-    rect(256,78,50,6, PAL.workRoof);
-    block(264,92,10,10, PAL.windowGlass, 2);
-    if (lampsOn()) litWindow(264,92,10,10);
-    block(286,92,10,10, PAL.windowGlass, 2);
-    if (lampsOn()) litWindow(286,92,10,10);
-    block(270,124,22,26, PAL.doorBrown, 2);
-
-    // low fence on the grass in front of the house
-    rect(6,152,54,3,'#6f5438');
-    for(let i=0;i<5;i++) rect(8+i*12,152,4,12,'#6f5438');
-
-    // foreground trees, sitting on the grass in the gaps between buildings
-    smallTree(64,168,11);
-    smallTree(248,168,11);
-
-    // cafe's outdoor table + umbrella, set against the cafe front
-    rect(216,154,4,30,'#8a5a44');                 // pole
-    block(204,182,28,6,'#5c3a26',2);              // table top
-    rect(210,188,4,10,'#4a2e1e'); rect(222,188,4,10,'#4a2e1e'); // table legs
-    ctx.fillStyle = PAL.outline;                  // canopy, outlined then filled
-    ctx.beginPath(); ctx.moveTo(196,158); ctx.lineTo(218,136); ctx.lineTo(240,158); ctx.closePath(); ctx.fill();
-    ctx.fillStyle = '#e07a5f';
-    ctx.beginPath(); ctx.moveTo(199,155); ctx.lineTo(218,140); ctx.lineTo(237,155); ctx.closePath(); ctx.fill();
-    ctx.fillStyle = shade('#e07a5f',0.16);
-    ctx.beginPath(); ctx.moveTo(199,155); ctx.lineTo(218,140); ctx.lineTo(218,155); ctx.closePath(); ctx.fill();
-
-    // little flower patches on the grass
-    flower(30,178,PAL.flowerYellow); flower(46,192,PAL.flowerWhite);
-    flower(100,186,PAL.flowerRed);   flower(118,206,PAL.flowerYellow);
-    flower(196,200,PAL.flowerWhite); flower(272,190,PAL.flowerRed);
-    flower(288,212,PAL.flowerYellow);
-
-    // Streetlamp beside the path. It used to exist only at night, appearing
-    // out of nowhere at dusk; now it's always there and simply lights up.
-    rect(182,116,4,34,'#2a2320');
-    rect(179,106,10,3,'#2a2320');                 // cap
-    rect(180,109,8,7, lampsOn() ? '#3a3530' : '#8a8f86');
-    if (lampsOn()){
-      addLight(184, 112, 26, '255,206,130', 0.50, () => {
-        rect(180,109,8,7,'#ffd88a'); rect(181,110,6,2,'#fff1c9');
-      });
-      addLight(178, 162, 34, '255,190,110', 0.20); // the pool it throws on the path
-    }
-    // Night shading and weather happen in finishScene(), after he's drawn.
-  }
-
-  function drawWindowWeather(wx,wy,ww,wh,w,isDay,t){
-    ctx.save();
-    ctx.beginPath(); ctx.rect(wx,wy,ww,wh); ctx.clip();
-    skyGradient(wx,wy,ww,wh);
-    if (w==='rainy') drawRain(t);
-    if (w==='snowy') drawSnow(t);
-    if (w==='foggy') rect(wx,wy,ww,wh,PAL.fog);
-    ctx.restore();
-    ctx.strokeStyle = PAL.outline; ctx.lineWidth=4;
-    ctx.strokeRect(wx,wy,ww,wh);
-    ctx.strokeStyle = shade(PAL.doorBrown,0.3); ctx.lineWidth=2;
-    ctx.strokeRect(wx+3,wy+3,ww-6,wh-6);
-  }
-
-  // cross-mullion divider for a window pane
-  function paneCross(x,y,w,h){
-    ctx.strokeStyle = PAL.outline; ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.moveTo(x+w/2,y); ctx.lineTo(x+w/2,y+h);
-    ctx.moveTo(x,y+h/2); ctx.lineTo(x+w,y+h/2);
-    ctx.stroke();
-  }
-
-  // ---- interiors ----
-  function drawHome(t, w, isDay){
-    rect(0,0,W,H, isDay ? shade(PAL.interiorWarm,0.06) : PAL.interiorWarm);
-    rect(0,H-36,W,36, PAL.floorHome);
-    rect(0,H-36,W,4, shade(PAL.floorHome,0.15));
-    speckle(0,H-32,W,32, shade(PAL.floorHome,0.08), 0.006, 2);
-
-    drawWindowWeather(224,28,64,44,w,isDay,t);
-    paneCross(224,28,64,44);
-    // curtains either side of the window
-    block(214,24,10,54,'#7a4a3a',2);
-    block(288,24,10,54,'#7a4a3a',2);
-
-    // rug
-    rect(92,202,96,26, PAL.rugRed);
-    rect(100,208,80,14, PAL.rugCream);
-    rect(112,213,56,4, PAL.rugRed);
-
-    // bed
-    block(20,148,68,40,'#7a4a3a',3);
-    block(20,140,68,12,'#c9b48a',2);
-    block(76,140,12,20,'#e8dcc0',2);
-    rect(26,144,18,6,'#e07a5f'); // pillow stripe
-
-    // wall art
-    block(104,40,32,24, PAL.woodDark, 2);
-    rect(110,46,20,12,'#4a7ba6');
-    rect(118,52,8,6,'#5c8a4a');
-
-    // table + lamp (shade on a stem that meets the table top at y=172)
-    block(100,172,40,20,'#5c4030',2);
-    rect(112,152,5,20,'#3a2a1e');
-    block(104,138,20,14,'#e0b13b',2);
-    if (lampsOn()){
-      addLight(114, 152, 48, WARM, 0.34, () => block(104,138,20,14,'#ffd27a',2));
-    } else {
-      ctx.fillStyle = 'rgba(244,162,89,0.12)';
-      ctx.beginPath(); ctx.arc(114,158,16,0,Math.PI*2); ctx.fill();
-    }
-    rect(130,164,7,9,'#e8dcc0'); // mug
-
-    // bookshelf
-    block(150,140,36,52, PAL.woodDark, 2);
-    rect(154,146,28,18,'#1a1410');
-    ['#a84a3e','#4a7ba6','#e0b13b','#5c8a4a','#8a5a44'].forEach((c,i)=> rect(156+i*5,148,4,14,c));
-    rect(154,170,28,18,'#1a1410');
-    ['#8a5a44','#a84a3e','#4a7ba6','#e0b13b'].forEach((c,i)=> rect(156+i*5,172,4,14,c));
-
-    // bearded dragon terrarium
-    block(192,140,52,52,'#2a3238',3);
-    rect(196,144,44,40,'#141a1d');
-    rect(200,168,36,12,'#c9b48a');
-    drawDragon(212,160);
-    ctx.strokeStyle=PAL.outline; ctx.lineWidth=2; ctx.strokeRect(192,140,52,52);
-  }
-
-  function drawCafe(t,w,isDay){
-    rect(0,0,W,H, PAL.interiorCafe);
-    rect(0,H-32,W,32, PAL.floorCafe);
-    for(let i=0;i<W;i+=32) rect(i,H-32,2,32, shade(PAL.floorCafe,-0.05));
-    speckle(0,H-28,W,28, shade(PAL.floorCafe,0.07), 0.006, 4);
-
-    drawWindowWeather(28,28,60,44,w,isDay,t);
-    paneCross(28,28,60,44);
-
-    // hanging pendant light
-    rect(120,0,3,20,'#2a1c14');
-    block(112,20,18,12,'#e0b13b',2);
-    if (lampsOn()){
-      addLight(121, 34, 60, '255,200,120', 0.30, () => block(112,20,18,12,'#ffd27a',2));
-    } else {
-      ctx.fillStyle = 'rgba(224,177,58,0.12)';
-      ctx.beginPath(); ctx.arc(121,36,14,0,Math.PI*2); ctx.fill();
-    }
-
-    // menu chalkboard
-    block(140,84,44,30,'#2a2320',2);
-    rect(148,94,28,3,'#e8dcc0'); rect(148,101,20,3,'#e8dcc0'); rect(148,108,24,3,'#e8dcc0');
-
-    // counter
-    block(180,140,120,40,'#5c3a26',3);
-    rect(180,132,120,8, PAL.cafeSign);
-    block(200,100,20,32,'#3a2418',2);   // coffee machine
-    block(204,88,12,16,'#c9b48a',2);    // cup on top
-    rect(206,80,2,7,'rgba(230,230,230,0.35)');
-    rect(211,78,2,9,'rgba(230,230,230,0.3)');
-
-    // pastry display on the counter
-    block(238,116,40,16,'#2a3238',2);
-    rect(242,120,10,8,'#c9955a'); rect(255,120,10,8,'#e0b13b'); rect(268,120,6,8,'#a86a3e');
-
-    // his chair (seat lines up with the seated sprite's base at y=192) + table
-    block(44,150,8,36,'#3a2a1e',2);   // chair back
-    block(48,184,32,8,'#3a2a1e',2);   // chair seat
-    block(88,176,44,10,'#5c4030',2);  // table top
-    rect(94,186,5,18,'#3a2a1e');      // table legs
-    rect(120,186,5,18,'#3a2a1e');
-    rect(104,167,7,9,'#e8dcc0');      // cup on the table
-
-    // plant
-    block(280,160,16,28,'#5c3a26',2);
-    blob(288,150,14,'#5c8a4f');
-  }
-
-  function drawWork(t,w,isDay){
-    rect(0,0,W,H, PAL.interiorWork);
-    rect(0,H-32,W,32, PAL.floorWork);
-    speckle(0,H-28,W,28, shade(PAL.floorWork,0.07), 0.006, 6);
-
-    drawWindowWeather(236,28,60,44,w,isDay,t);
-    paneCross(236,28,60,44);
-
-    // cork board with pinned notes
-    block(40,40,52,36,'#a8845c',2);
-    rect(48,48,14,12,'#e8dcc0'); rect(68,46,12,10,'#f4a259'); rect(48,64,12,8,'#bcd8e8');
-    rect(54,51,3,3,'#a84a3e'); rect(73,49,3,3,'#a84a3e'); // pins
-
-    // desk
-    block(40,156,160,16,'#4a5560',2);
-    block(40,172,8,32,'#2a3238',2);
-    block(192,172,8,32,'#2a3238',2);
-    rect(60,148,88,8,'#2a3238'); // desk mat
-
-    // monitor
-    block(80,108,56,40,'#20262b',2);
-    rect(86,114,44,28,'#4a7ba6');
-    for(let i=0;i<4;i++) rect(90,120+i*6,20+(i%2)*12,2,'#bcd8e8');
-    block(104,148,8,8,'#2a3238',1);
-
-    // second small monitor / notebook
-    block(146,126,28,20,'#20262b',2);
-    rect(150,130,20,12,'#3a4e5c');
-    // trailing cable
-    ctx.strokeStyle='#141a1d'; ctx.lineWidth=2;
-    ctx.beginPath(); ctx.moveTo(134,148); ctx.lineTo(134,160); ctx.lineTo(146,164); ctx.stroke();
-
-    // desk chair, side-on: backrest rises directly off the seat
-    block(118,140,10,34,'#5b7c99',2);  // backrest
-    block(118,174,30,9,'#3a4750',2);   // seat
-    rect(130,183,5,14,'#2a3238');      // pedestal
-    rect(122,197,22,4,'#2a3238');      // base
-
-    rect(186,146,7,10,'#e8dcc0'); // coffee cup
-
-    // Desk lamp at the free left end of the desk (the office had no light of
-    // its own at night). Its base sits on the desk top at y=156.
-    rect(44,152,14,4,'#2a3238');                 // base
-    rect(50,134,2,18,'#3a4750');                 // stem
-    block(46,128,12,6, '#8a9aa6', 1);            // shade
-    if (lampsOn()){
-      addLight(52, 142, 40, WARM, 0.30, () => block(46,128,12,6,'#ffd27a',1));
-      // The screens light the room, and him, blue. Glow only, no redraw:
-      // he sits just in front of the main monitor.
-      addLight(108, 128, 48, '140,190,255', 0.26);
-      addLight(160, 136, 22, '140,190,255', 0.16);
-    }
-
-    // plant
-    block(240,160,16,28,'#4a5560',2);
-    blob(248,150,12,'#8bab7f');
-  }
-
-  // stacked books on a surface — y is the surface, books stack upward
-  function bookPile(x,y,heights,colors){
-    let cy = y;
-    for(let i=0;i<heights.length;i++){
-      const h = heights[i];
-      block(x, cy-h, 20, h, colors[i%colors.length], 1);
-      cy -= h;
+      shopSign(ROOM_BY_ID.bookstore, PAL.bookSign, bookIcon);
+      shopSign(ROOM_BY_ID.cafe, '#3e2723', cupIcon);
+      drawStreetProps();
+      drawPromenadeEdge();
+      drawBeachSand();
+      ctx.globalCompositeOperation = 'destination-out';
+      for (const p of WINDOW_PANES) fillPoly(p.pane, '#000');
+      ctx.globalCompositeOperation = 'source-over';
+      for (const p of WINDOW_PANES) drawMullions(p);
+    });
+    for (const r of ROOMS){
+      stubLayers[r.id] = newLayer();
+      drawInto(stubLayers[r.id], () => drawStubs(r));
     }
   }
 
-  // floor-to-ceiling shelving unit packed with coloured spines
-  function bookshelfWall(x,y,w,h,rows,colorSets){
-    block(x,y,w,h, PAL.woodDark, 2);
-    const rowH = h/rows;
-    for(let row=0; row<rows; row++){
-      const ry = y + row*rowH + 4;
-      rect(x+4, ry, w-8, rowH-6, '#1a120c'); // shelf recess
-      const colors = colorSets[row%colorSets.length];
-      const spineW = 4, gap = 2;
-      const n = Math.floor((w-8)/(spineW+gap));
-      for(let i=0;i<n;i++){
-        rect(x+6+i*(spineW+gap), ry+2, spineW, rowH-10, colors[i%colors.length]);
-      }
-      rect(x, y+row*rowH, w, 2, shade(PAL.woodDark,0.2)); // shelf ledge
+  // The sky seen through each window, rain and all: weather is outdoors, so
+  // it belongs in the view, not the room.
+  function drawWindowViews(t, w){
+    for (const p of WINDOW_PANES){
+      const [x, y, ww, hh] = p.bbox;
+      skyGradient(x, y, ww, hh);
+      if (w === 'rainy') rainOn(ctx, t, x, y, ww, hh, Math.max(3, (ww * hh / 55) | 0));
+      else if (w === 'snowy') snowOn(ctx, t, x, y, ww, hh, Math.max(2, (ww * hh / 90) | 0));
+      else if (w === 'foggy') rect(x, y, ww, hh, PAL.fog);
     }
   }
 
-  function drawBookstore(t,w,isDay){
-    rect(0,0,W,H, PAL.bookWall);
-    rect(0,H-32,W,32, PAL.floorBook);
-    rect(0,H-32,W,4, shade(PAL.floorBook,0.15));
-    speckle(0,H-28,W,28, shade(PAL.floorBook,0.07), 0.006, 7);
+  // ---------- sea, tide, ships ----------
+  function waterlineY(){
+    const n = state.tide ? state.tide.norm : 0.5;          // mid-tide if we don't know
+    return Math.round(rowY(HIGH_WATER_S) + BEACH_DROP + 2 + (1 - n) * 16);
+  }
 
-    // large window, centred
-    drawWindowWeather(112,20,96,64,w,isDay,t);
-    paneCross(112,20,96,64);
-
-    const spineSetsA = [
-      ['#a84a3e','#4a7ba6','#5c8a4a','#e0b13b'],
-      ['#8a5a44','#7c5a9e','#a84a3e','#4a7ba6'],
-    ];
-    const spineSetsB = [
-      ['#5c8a4a','#a84a3e','#e0b13b','#7c5a9e'],
-      ['#4a7ba6','#8a5a44','#5c8a4a','#a84a3e'],
-    ];
-    // floor-to-ceiling bookshelves flanking the window
-    bookshelfWall(10,16,40,128,5,spineSetsA);
-    bookshelfWall(270,16,40,128,5,spineSetsB);
-
-    // floor lamp beside the reading chair — pole runs all the way to a base on the floor
-    rect(102,152,4,54,'#3a2a1e');
-    rect(96,206,16,4,'#3a2a1e');
-    block(94,138,20,14, '#e0b13b', 2);
-    if (lampsOn()){
-      addLight(104, 150, 48, WARM, 0.34, () => block(94,138,20,14,'#ffd27a',2));
-    } else {
-      ctx.fillStyle = 'rgba(244,162,89,0.12)';
-      ctx.beginPath(); ctx.arc(104,158,16,0,Math.PI*2); ctx.fill();
+  function drawSea(t){
+    const wetTop = rowY(HIGH_WATER_S) + BEACH_DROP, wl = waterlineY(), n = curSky.night;
+    rect(0, wetTop, W, wl - wetTop + 2, PAL.sandWet);      // what the tide has uncovered
+    const near = mix(PAL.seaDayFar, PAL.seaNightFar, n), far = mix(PAL.seaDay, PAL.seaNight, n);
+    const g = ctx.createLinearGradient(0, wl, 0, H);
+    g.addColorStop(0, near); g.addColorStop(1, far);
+    ctx.fillStyle = g; ctx.fillRect(0, wl, W, H - wl);
+    if (curSky.glow > 0.02) rect(0, wl, W, H - wl, 'rgba(255,150,120,' + (0.22 * curSky.glow * (1 - n * 0.5)).toFixed(3) + ')');
+    for (let row = 0; wl + 6 + row * 9 < H; row++){
+      const ry = wl + 6 + row * 9, depth = Math.min(1, row / 12);
+      const len = 4 + (row % 3) * 2, gap = 30 + (row % 4) * 6, speed = 0.6 + (row % 3) * 0.3, dir = row % 2 ? 1 : -1;
+      ctx.fillStyle = n < 0.5 ? 'rgba(233,246,250,' + (0.30 - depth * 0.12).toFixed(2) + ')' : 'rgba(180,205,225,' + (0.22 - depth * 0.08).toFixed(2) + ')';
+      const off = ((t * speed * dir + row * 17) % gap + gap) % gap;
+      for (let x = -gap + off; x < W; x += gap) ctx.fillRect(Math.round(x), ry, len, 1);
     }
-
-    // rug under the table
-    rect(96,206,128,22, PAL.rugRed);
-    rect(104,211,112,12, PAL.rugCream);
-
-    // central table piled high with books
-    block(116,176,88,16, PAL.woodMid, 3);
-    rect(120,192,8,32, PAL.woodDark);
-    rect(192,192,8,32, PAL.woodDark);
-    bookPile(124, 176, [6,6,8], ['#a84a3e','#4a7ba6','#5c8a4a']);
-    bookPile(152, 176, [8,6],   ['#e0b13b','#8a5a44']);
-    bookPile(176, 176, [6,6,6], ['#7c5a9e','#a84a3e','#4a7ba6']);
-
-    // reading armchair, side-on: backrest rises directly off the seat
-    block(62,148,10,32,'#8a5a44',2);   // backrest
-    block(62,180,32,10,'#a06a52',2);   // seat
-    rect(66,190,5,14,'#5c3a26');       // legs
-    rect(86,190,5,14,'#5c3a26');
-
-    // potted plant by the shelves
-    block(236,160,16,28,'#5c3a26',2);
-    blob(244,150,12,'#5c8a4f');
+    const wash = Math.sin(t / 22) * 2;
+    ctx.fillStyle = PAL.seaFoam;
+    for (let x = 0; x < W; x += 2) ctx.fillRect(x, Math.round(wl + wash + Math.sin(x / 17 + t / 5) * 1.5), 2, 2);
   }
 
-  // ---- beach ----
-  // Layout bands: sky 0..108, sea 108..178, wet sand 178..190, dry sand 190..240.
-  // The high-water mark is fixed — that's where the dry sand starts, and it
-  // doesn't move. The waterline itself does: at low tide it retreats up the
-  // screen and uncovers a wide band of wet sand, at high tide it comes almost
-  // all the way to the dry sand.
-  const HORIZON = 108, HIGH_WATER = 192;
-  function shoreLine(){
-    const n = state.tide ? state.tide.norm : 0.5;   // mid-tide if we don't know
-    return Math.round(166 + n * 22);                 // 166 out, 188 in
+  // St Mary's Island and its lighthouse, up the coast to the north: your right.
+  const ISLAND = { x: 452, y: rowY(HIGH_WATER_S) + BEACH_DROP + 40 };
+  function drawIsland(t){
+    const { x, y } = ISLAND;
+    blob(x - 9, y, 7, '#7d776a'); blob(x + 8, y + 1, 6, '#7d776a'); blob(x, y - 2, 9, '#8a8474');
+    rect(x - 10, y - 8, 20, 3, '#6f9e5f');
+    rect(x + 3, y - 14, 8, 6, PAL.outline); rect(x + 4, y - 13, 6, 5, '#eeeae0'); rect(x + 4, y - 15, 6, 2, '#8a3f30');   // keeper's cottage
+    rect(x - 5, y - 35, 8, 28, PAL.outline); rect(x - 4, y - 34, 6, 27, '#f2eee4'); rect(x - 4, y - 34, 2, 27, '#fffdf6');
+    rect(x - 6, y - 39, 10, 4, PAL.outline); rect(x - 3, y - 38, 4, 3, '#8f9aa0');
+    if (lampsOn() && Math.floor(t / 8) % 3 === 0){
+      addLight(x - 1, y - 37, 26, '255,236,180', 0.6, () => rect(x - 3, y - 38, 4, 3, '#fff3c4'));
+    }
   }
 
-  // Where a real vessel sits on screen.
-  //  - bearing maps left-to-right: you face east from the beach, so north (0)
-  //    is on your left, east (90) straight ahead, south (180) on your right.
-  //    Anything behind that arc (up the river, inland) clamps to an edge.
-  //  - distance maps to depth: far boats sit high near the horizon and small,
-  //    near boats sit low and large.
-  // The arc is deliberately wider than a literal 180 degrees. Real traffic here
-  // bunches hard into two sectors — the Tyne mouth at ~170-190 to the south,
-  // and the run north past St Mary's at ~340-360 — so mapping a strict
-  // half-circle piles every vessel onto the two edges of the canvas.
-  const VIEW_ARC = 120;   // degrees either side of due east
-  function boatScreenPos(b, shoreY){
+  // Where a real vessel sits. You face west, so north (0°) is on your right
+  // and south (180°) on your left; the arc is wider than a literal half
+  // circle because traffic bunches at the Tyne mouth and north past St Mary's.
+  // Distance runs down the water: close in near the beach, far out at the front.
+  const VIEW_ARC = 120;
+  function boatScreenPos(b, seaTop){
     let off = b.bearing - 90;
     if (off > 180) off -= 360;
     if (off < -180) off += 360;
     const fx = Math.max(-1, Math.min(1, off / VIEW_ARC));
-    // Depth curve, not a straight ratio. Vessels round here sit between about
-    // 3 and 12 km out, which against a flat 0-22 km scale squeezes them all
-    // into one band halfway up the water. The exponent stretches that common
-    // range across the sea and lets genuinely distant ships compress toward
-    // the horizon, which is how perspective behaves anyway.
-    const f = Math.pow(Math.min(b.distanceKm, 16) / 16, 0.7);   // 0 = close, 1 = horizon
-    // The sea band shrinks and grows with the tide, so depth is measured
-    // against the current waterline rather than a fixed one — otherwise a
-    // near boat ends up beached on the sand at low water.
-    const band = Math.max(24, shoreY - HORIZON - 9);
-    return {
-      x: W/2 + fx * 140,
-      y: HORIZON + 3 + (1 - f) * band,
-      s: 0.5 + (1 - f) * 2.1,
-    };
+    const f = Math.pow(Math.min(b.distanceKm, 16) / 16, 0.7);
+    return { x: W / 2 - fx * 200, y: seaTop + 16 + f * (H - seaTop - 30), s: 1.15 };
   }
 
-  // One boat, drawn facing the way it's actually steaming.
   function drawBoat(cx, waterY, s, cat){
     let L, hullH, hull, style;
     switch (cat) {
@@ -1500,285 +1566,390 @@
   }
 
   // Real vessels show lights at night, and what they show depends on what
-  // they're doing — so the ones out there really do tell you something. One
-  // under way shows a white masthead light and a sidelight (from this beach,
-  // looking east at north/south traffic, one heading right has its green
-  // starboard side toward you, one heading left its red port side). One at
-  // anchor or moored, which is most of what waits off the Tyne, shows only a
-  // white all-round anchor light.
+  // they're doing. One under way shows a white masthead light and a sidelight:
+  // seen from the east, a northbound ship (heading right here) shows its green
+  // starboard side, a southbound one its red port side. One at anchor or
+  // moored, which is most of what waits off the Tyne, shows only a white
+  // all-round anchor light.
   function addShipLights(x, y, q){
-    const d = Math.max(1, Math.round(q.s * 0.8));  // dot size grows with nearness
-    // Kept deliberately small: a near ship's light at the old size blew out
-    // into a white disc bigger than the ship, reading as a moon.
+    const d = Math.max(1, Math.round(q.s * 0.8));
     const r = 3 + q.s * 2.2;
-    const dot = (lx, ly, col) => () => rect(Math.round(lx - d/2), Math.round(ly - d/2), d, d, col);
-    const topY = y - 13 * q.s;                      // roughly the top of the superstructure
+    const dot = (lx, ly, col) => () => rect(Math.round(lx - d / 2), Math.round(ly - d / 2), d, d, col);
+    const topY = y - 13 * q.s;
     addLight(x, topY, r, '255,250,230', 0.32, dot(x, topY, '#fffbea'));
     if (q.b.moving){
-      const dir = q.west ? -1 : 1;
+      const dir = q.left ? -1 : 1;
       const sx = x + dir * q.hw * 0.33, sy = y - 4 * q.s;
-      const green = !q.west;
+      const green = !q.left;
       addLight(sx, sy, r, green ? '90,255,140' : '255,80,70', 0.38, dot(sx, sy, green ? '#7dffa6' : '#ff6a5c'));
     }
   }
 
-  function drawBeach(t, w, isDay){
-    const shoreY = shoreLine();
-    skyGradient(0, 0, W, HORIZON);
-    drawSkyDetails(t, w, HORIZON, true);
-
-    // Sea, darkening toward the shore so the horizon reads as distance. Its
-    // colour follows the light, and it catches the sky's colour at dusk/dawn.
-    const n = curSky.night;
-    const far = mix(PAL.seaDayFar, PAL.seaNightFar, n), near = mix(PAL.seaDay, PAL.seaNight, n);
-    const g = ctx.createLinearGradient(0, HORIZON, 0, shoreY);
-    g.addColorStop(0, far); g.addColorStop(1, near);
-    ctx.fillStyle = g; ctx.fillRect(0, HORIZON, W, shoreY - HORIZON);
-    if (curSky.glow > 0.02){
-      rect(0, HORIZON, W, shoreY - HORIZON, 'rgba(255,150,120,' + (0.26 * curSky.glow * (1 - n * 0.5)).toFixed(3) + ')');
-    }
-    rect(0, HORIZON, W, 2, shade(far, -0.10));
-
-    // St Mary's Island, up the coast to the north — so, off to your left. Kept
-    // low and hazy: it's a couple of miles off, and a hard dark mass this high
-    // in a bright sky reads as a hill in the wrong place rather than distance.
-    const hl = isDay ? PAL.headlandFar : shade(PAL.headland, -0.10);
-    ctx.fillStyle = hl;
-    ctx.beginPath(); ctx.arc(30, HORIZON + 6, 15, Math.PI, 0); ctx.fill();
-    const lx = 27, lTop = HORIZON - 15;
-    rect(lx, lTop, 4, 16, isDay ? '#dcdcd2' : '#7d8890');   // tower
-    rect(lx, lTop - 3, 4, 3, isDay ? '#8f9aa0' : PAL.outline); // lamp housing
-    // The light turns: lit for part of each cycle, and actually shines now.
-    if (lampsOn() && Math.floor(t / 8) % 3 === 0){
-      addLight(lx + 2, lTop - 2, 24, '255,236,180', 0.60, () => rect(lx - 1, lTop - 3, 6, 3, '#fff3c4'));
-    }
-
-    // Wave rows. Longer, thicker and faster toward the front for perspective.
-    for (let row = 0; row < 9; row++){
-      const ry = HORIZON + 6 + row * 7;
-      if (ry > shoreY - 4) break;
-      const depth = row / 8;
-      const len = 3 + depth * 9;
-      const speed = 0.5 + depth * 1.6;
-      const gap = 26 + row * 3;
-      ctx.fillStyle = isDay
-        ? 'rgba(233,246,250,' + (0.16 + depth * 0.24) + ')'
-        : 'rgba(180,205,225,' + (0.10 + depth * 0.16) + ')';
-      for (let x = -gap; x < W + gap; x += gap){
-        const wx = x + ((t * speed + row * 13) % gap);
-        ctx.fillRect(Math.round(wx), ry, Math.round(len), Math.max(1, Math.round(1 + depth * 1.5)));
-      }
-    }
-
-    // Boats: farthest first, so nearer ones correctly overlap them.
+  function drawShips(t){
     state.boatHits.length = 0;
+    const seaTop = waterlineY();
     const elapsed = (Date.now() - state.boatsAt) / 1000;
     const placed = [];
     for (const b of state.boats){
-      const pos = boatScreenPos(b, shoreY);
-      // Between server updates, let moving vessels carry on in the direction
-      // they were last steaming, and everything ride the swell a little.
-      const west = (b.course > 180 && b.course < 360);
-      const drift = Math.max(-12, Math.min(12, (b.speedKts || 0) * elapsed * 0.05)) * (west ? -1 : 1);
-      placed.push({
-        b, west, s: pos.s,
-        x: pos.x + drift,
-        y: pos.y + Math.sin((t / 9) + b.distanceKm) * (0.6 + pos.s * 0.5),
-        hw: Math.max(18, 26 * pos.s),
-        hh: Math.max(15, 22 * pos.s),
-      });
+      const pos = boatScreenPos(b, seaTop);
+      const left = Math.cos((b.course || 0) * Math.PI / 180) < 0;    // heading south: to your left
+      const drift = Math.max(-12, Math.min(12, (b.speedKts || 0) * elapsed * 0.05)) * (left ? -1 : 1);
+      placed.push({ b, left, s: pos.s, x: pos.x + drift,
+        y: pos.y + Math.sin((t / 9) + b.distanceKm) * 1.2, hw: 30, hh: 24 });
     }
-
-    // Even across a wide arc, vessels queueing for the same river mouth land
-    // almost on top of one another. Nudge apart any that would overlap at a
-    // similar depth, so each stays separately visible and hoverable.
+    // Ships queueing for the same river mouth land almost on top of one
+    // another; nudge apart any that would overlap, so each stays hoverable.
     placed.sort((a, b) => a.x - b.x);
     for (let i = 1; i < placed.length; i++){
-      const prev = placed[i-1], cur = placed[i];
-      const need = (prev.hw + cur.hw) * 0.5 + 3;
+      const prev = placed[i - 1], cur = placed[i], need = (prev.hw + cur.hw) * 0.5 + 3;
       if (Math.abs(cur.y - prev.y) < 15 && cur.x - prev.x < need) cur.x = prev.x + need;
     }
-    for (const q of placed) q.x = Math.max(14, Math.min(W - 14, q.x));
+    for (const q of placed) q.x = Math.max(16, Math.min(W - 16, q.x));
 
-    placed.sort((a, b) => b.b.distanceKm - a.b.distanceKm);
-    for (const q of placed){
+    // island and ships, back to front
+    const items = placed.map(q => ({ y: q.y, draw: () => {
       const x = Math.round(q.x), y = Math.round(q.y);
-      ctx.save();
-      ctx.translate(x, y);
-      if (q.west) ctx.scale(-1, 1);   // mirror about the boat's own centre
+      ctx.save(); ctx.translate(x, y); if (q.left) ctx.scale(-1, 1);
       drawBoat(0, 0, q.s, q.b.category);
       ctx.restore();
-      state.boatHits.push({ x: x - q.hw/2, y: y - q.hh + 4, w: q.hw, h: q.hh, boat: q.b });
+      state.boatHits.push({ x: x - q.hw / 2, y: y - q.hh + 4, w: q.hw, h: q.hh, boat: q.b });
       if (lampsOn()) addShipLights(x, y, q);
-    }
-
-    // Wet sand: whatever the retreating water has uncovered. Wide at low tide,
-    // barely a strip at high tide.
-    rect(0, shoreY, W, HIGH_WATER - shoreY, PAL.sandWet);
-    // Foam edge, with the individual waves still washing in and out on top of
-    // wherever the tide has put the waterline.
-    const wash = Math.sin(t / 22) * 3;
-    ctx.fillStyle = PAL.seaFoam;
-    for (let x = 0; x < W; x += 2){
-      const fy = shoreY + wash + Math.sin((x / 17) + t / 5) * 2;
-      ctx.fillRect(x, Math.round(fy), 2, 3);
-    }
-
-    // Dry sand, starting at the fixed high-water mark.
-    rect(0, HIGH_WATER, W, H - HIGH_WATER, PAL.sand);
-    rect(0, HIGH_WATER, W, 3, PAL.sandDark);
-    speckle(0, HIGH_WATER + 4, W, H - HIGH_WATER - 4, PAL.sandLight, 0.004, 3);
-    speckle(0, HIGH_WATER + 4, W, H - HIGH_WATER - 4, PAL.sandDark, 0.003, 9);
-    // A few pebbles and a bit of driftwood, fixed so they don't crawl about.
-    [[38,214],[92,228],[203,206],[268,224],[141,236]].forEach(([px,py], i) => {
-      rect(px, py, 3 + (i % 2), 2, PAL.pebble);
-    });
-    rect(232, 216, 18, 3, PAL.woodDark);
-    rect(234, 214, 12, 2, PAL.woodMid);
-
-    // Night shading and weather happen in finishScene(), after he's drawn.
+    } }));
+    items.push({ y: ISLAND.y, draw: () => drawIsland(t) });
+    items.sort((a, b) => a.y - b.y).forEach(it => it.draw());
   }
 
-  function drawDragon(x,y){
-    block(x,y,20,8,PAL.dragonGreen,1);
-    block(x-6,y+2,8,4,PAL.dragonGreen,1);
-    blob(x+22,y+4,7,PAL.dragonGreen);
-    rect(x+4,y+7,10,2,PAL.dragonBelly);
+  // ---------- light, dark and weather ----------
+  // Scenes register light sources as they draw; once everything's on the
+  // canvas, finishScene() shades the lot for the time of day (him included)
+  // and paints the lights back on top so they glow into the dark.
+  const lights = [];
+  function addLight(x, y, r, rgb, alpha, redraw){ lights.push({ x, y, r, rgb, alpha, redraw }); }
+  function glow(x, y, r, rgb, alpha){
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, 'rgba(' + rgb + ',' + alpha + ')');
+    g.addColorStop(1, 'rgba(' + rgb + ',0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+  const WARM = '255,196,120';
+
+  // Lamps in the rooms and along the promenade, once it's getting dark.
+  function registerLamps(){
+    if (!lampsOn()) return;
+    const at = (r, lx, ly, z) => iso(r.ox + lx, r.oy + ly, z);
+    for (const r of ROOMS){                                  // a lit room glows from within
+      const [cx, cy] = at(r, 3, 3, 14);
+      addLight(cx, cy, 64, WARM, 0.14);
+    }
+    const H0 = ROOM_BY_ID.home, BK = ROOM_BY_ID.bookstore, CF = ROOM_BY_ID.cafe, WK = ROOM_BY_ID.work;
+    let p = at(H0, 2.85, 4.35, 17);
+    addLight(p[0], p[1], 46, WARM, 0.34, () => isoBox(H0.ox + 2.6, H0.oy + 4.1, 14, 0.5, 0.5, 5, '#ffd27a', { outline: false }));
+    p = at(H0, 4.7, 0.65, 20);
+    addLight(p[0], p[1], 16, '255,140,80', 0.30);            // the lizard's heat lamp
+    p = at(BK, 1.0, 4.0, 31);
+    addLight(p[0], p[1], 46, WARM, 0.34, () => isoBox(BK.ox + 0.65, BK.oy + 3.65, 28, 0.75, 0.75, 6, '#ffd27a', { outline: false }));
+    p = onR(CF, 0.78, 31.5);
+    addLight(p[0], p[1], 44, '255,200,120', 0.30, () => fillPoly(wallQuad(onR, CF, 0.55, 29, 0.45, 5), '#ffd27a'));
+    p = at(CF, 3.5, 0.7, 20);
+    addLight(p[0], p[1], 34, '255,200,120', 0.20);
+    p = at(WK, 0.5, 1.65, 25);
+    addLight(p[0], p[1], 36, WARM, 0.30, () => isoBox(WK.ox + 0.2, WK.oy + 1.4, 23, 0.6, 0.5, 4, '#ffd27a', { outline: false }));
+    p = at(WK, 0.6, 3.05, 21);
+    addLight(p[0], p[1], 44, '140,190,255', 0.26);           // the screen lights him up
+    for (const L of LAMPS){
+      const [hx, hy] = iso(L.x, L.y, 33);
+      addLight(hx, hy, 30, '255,206,130', 0.5, () => isoBox(L.x - 0.28, L.y - 0.28, 30, 0.56, 0.56, 6, '#ffd88a', { outline: false }));
+      const [gx, gy] = iso(L.x + 1.2, L.y + 1.2, 0);
+      addLight(gx, gy, 36, '255,190,110', 0.20);             // the pool it throws on the paving
+    }
   }
 
-  // ---- character ----
-  function drawCharacter(x,y,frame,seated,facingLeft){
-    ctx.save();
-    state.charBox = { x: x - 4, y: y - 12, w: 32, h: 58 };   // so lights don't paint over him
-    // Mirror about the sprite's own centre line (x+12) so he flips in place.
-    // (The old version negated x after translating, landing him at ~3x.)
-    if (facingLeft){ ctx.translate((x+12)*2, 0); ctx.scale(-1,1); }
-    const bob = seated ? 0 : (frame%2===0 ? 0 : -2);
+  // Weather has its own layer, with every room's silhouette cut out of it
+  // before it goes on screen: rain, snow and fog fall on the street, the
+  // beach, the sea and the sky, and never indoors.
+  const wxCanvas = newLayer();
+  const wxc = wxCanvas.getContext('2d');
+  const mod = (a, n) => ((a % n) + n) % n;
 
-    // legs
-    if (!seated){
-      block(x+4,y+28+bob,6,12, PAL.pants,1);
-      block(x+14,y+28+bob,6,12, PAL.pants,1);
-      block(x+4,y+40+bob,6,4, PAL.shoe,1);
-      block(x+14,y+40+bob,6,4, PAL.shoe,1);
+  function rainOn(c, t, x0, y0, w, h, n){
+    c.fillStyle = PAL.rain;
+    for (let i = 0; i < n; i++){
+      const x = Math.round(x0 + mod(i * 53 - t * 3, w)), y = Math.round(y0 + mod(i * 29 + t * 12, h));
+      c.fillRect(x, y, 1, 3);
+      c.fillRect(x - 1, y + 3, 1, 3);
+    }
+  }
+  function snowOn(c, t, x0, y0, w, h, n){
+    c.fillStyle = PAL.snow;
+    for (let i = 0; i < n; i++){
+      const x = Math.round(x0 + mod(i * 37 + Math.sin((t + i) / 8) * 10, w)), y = Math.round(y0 + mod(i * 17 + t * 2, h));
+      c.fillRect(x, y, 2, 2);
+    }
+  }
+
+  function drawOutdoorWeather(t, w){
+    if (w !== 'rainy' && w !== 'snowy' && w !== 'foggy') return;
+    wxc.clearRect(0, 0, W, H);
+    if (w === 'rainy') rainOn(wxc, t, 0, 0, W, H, 170);
+    if (w === 'snowy') snowOn(wxc, t, 0, 0, W, H, 120);
+    if (w === 'foggy'){ wxc.fillStyle = PAL.fog; wxc.fillRect(0, 0, W, H); }
+    wxc.globalCompositeOperation = 'destination-out';
+    for (const r of ROOMS) fillPolyOn(wxc, r.silhouette, '#000');
+    wxc.globalCompositeOperation = 'source-over';
+    ctx.drawImage(wxCanvas, 0, 0);
+  }
+
+  function finishScene(t, w){
+    const n = curSky.night;
+    if (curSky.glow > 0.02) rect(0, 0, W, H, 'rgba(255,150,80,' + (0.12 * curSky.glow * (1 - n)).toFixed(3) + ')');
+    if (n > 0.01){
+      rect(0, 0, W, H, 'rgba(8,12,26,' + (0.44 * n).toFixed(3) + ')');
+      const k = Math.min(1, n / 0.6);               // lights brighten as it darkens
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';     // light adds, never darkens
+      for (const L of lights) if (L.r) glow(L.x, L.y, L.r, L.rgb, L.alpha * k);
+      ctx.restore();
+      const c = state.charBox;                      // never paint a lamp over his face
+      for (const L of lights){
+        if (!L.redraw) continue;
+        if (c && L.x >= c.x && L.x <= c.x + c.w && L.y >= c.y && L.y <= c.y + c.h) continue;
+        L.redraw();
+      }
+    }
+    lights.length = 0;
+    drawOutdoorWeather(t, w);
+  }
+
+  // Small things that move inside the rooms.
+  function roomLife(t){
+    const CF = ROOM_BY_ID.cafe;
+    const [sx, sy] = iso(CF.ox + 1.95, CF.oy + 1.0, 21);
+    for (let k = 0; k < 3; k++){                               // steam off the coffee machine
+      const rise = mod(t * 1.2 + k * 5, 15);
+      ctx.fillStyle = 'rgba(240,240,240,' + (0.5 - rise / 32).toFixed(2) + ')';
+      ctx.fillRect(Math.round(sx + Math.sin((t + k * 4) / 3) * 1.5), Math.round(sy - rise), 2, 2);
+    }
+  }
+
+  // ---------- him ----------
+  // Sprites are drawn as little pixel maps, stacked from parts (head, body,
+  // legs) and given a dark outline automatically, then cached as tiny canvases.
+  const HERO = {
+    headFront: ['...hhhhhh...', '..hhhhhhhh..', '.hhhhhhhhhh.', '.hhhsshsshh.', '.hssssssssh.', '.hsessssesh.', '.hsessssesh.', '..bssmmssb..'],
+    headFrontBlink: ['...hhhhhh...', '..hhhhhhhh..', '.hhhhhhhhhh.', '.hhhsshsshh.', '.hssssssssh.', '.hssssssssh.', '.hsessssesh.', '..bssmmssb..'],
+    headSide: ['...hhhhhh...', '..hhhhhhhhh.', '.hhhhhhhhhh.', '.hhhhsshssh.', '.hhhsssssss.', '.hhhsessses.', '.hhhsessses.', '..hhbsssmb..'],
+    headSideBlink: ['...hhhhhh...', '..hhhhhhhhh.', '.hhhhhhhhhh.', '.hhhhsshssh.', '.hhhsssssss.', '.hhhsssssss.', '.hhhsessses.', '..hhbsssmb..'],
+    headBack: ['...hhhhhh...', '..hhhhhhhh..', '.hhhhhhhhhh.', '.hhhhhhhhhh.', '.hhhhhhhhhh.', '.HhhhhhhhhH.', '.HHhhhhhhHH.', '..HHhhhhHH..'],
+    neck: ['....ssss....'],
+    bodyFront: ['..rrrrrrrr..', '.sccccccccs.', '.sccccccccs.', '.sCccccccCs.', '.sCccccccCs.', '..cccccccc..'],
+    bodyBack: ['..cccccccc..', '.sccccccccs.', '.sccccccccs.', '.sCccccccCs.', '.sCCccccCCs.', '..cccccccc..'],
+    legsStand: ['..pppppppp..', '..ppp..ppp..', '..ppp..ppp..', '..ppp..ppp..', '..PPP..PPP..', '..kkk..kkk..', '..kkk..kkk..'],
+    legsWalkA: ['..pppppppp..', '..ppp..ppp..', '..ppp..ppp..', '..ppp..ppp..', '..PPP..kkk..', '..kkk..kkk..', '..kkk.......'],
+    legsWalkB: ['..pppppppp..', '..ppp..ppp..', '..ppp..ppp..', '..ppp..ppp..', '..kkk..PPP..', '..kkk..kkk..', '.......kkk..'],
+    legsSit: ['..pppppppp..', '..pppppppp..', '..PPp..pPP..', '..kkk..kkk..'],
+    legsSitBack: ['..pppppppp..', '..PPPPPPPP..'],
+  };
+  const heroCache = new Map();
+  function heroSprite(head, body, legs){
+    const key = head + '|' + body + '|' + legs;
+    if (heroCache.has(key)) return heroCache.get(key);
+    const rows = [...HERO[head], ...HERO.neck, ...HERO[body], ...HERO[legs]];
+    const cols = {
+      h: PAL.hair, H: shade(PAL.hair, -0.1), s: PAL.skin, e: PAL.ink, b: PAL.blush, m: PAL.mouth,
+      c: PAL.shirt, C: shade(PAL.shirt, -0.12), r: PAL.shirt2, p: PAL.pants, P: shade(PAL.pants, -0.12), k: PAL.shoe,
+    };
+    const w = rows[0].length, h = rows.length;
+    const cv = document.createElement('canvas');
+    cv.width = w + 2; cv.height = h + 2;
+    const c = cv.getContext('2d');
+    const solid = (x, y) => y >= 0 && y < h && x >= 0 && x < w && rows[y][x] !== '.';
+    c.fillStyle = PAL.outline;
+    for (let y = -1; y <= h; y++) for (let x = -1; x <= w; x++){
+      if (!solid(x, y) && (solid(x - 1, y) || solid(x + 1, y) || solid(x, y - 1) || solid(x, y + 1))) c.fillRect(x + 1, y + 1, 1, 1);
+    }
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++){
+      const ch = rows[y][x];
+      if (ch !== '.'){ c.fillStyle = cols[ch]; c.fillRect(x + 1, y + 1, 1, 1); }
+    }
+    heroCache.set(key, cv);
+    return cv;
+  }
+
+  function heroPose(now){
+    const place = placeInfo(state.location);
+    const walking = state.walking;
+    const seated = !walking && place && place.seat > 0;
+    const back = walking ? state.facing === 'back' : place.pose === 'back';
+    const side = walking && state.facing === 'side';
+    const tick = Math.floor(now / 180);
+    const bt = tick % 29;                              // a blink every ~5s, sometimes a double
+    const blink = !back && (bt === 0 || (bt === 2 && tick % 87 === 2));
+    const head = (back ? 'headBack' : side ? 'headSide' : 'headFront') + (blink ? 'Blink' : '');
+    const step = Math.floor(now / 160) % 2;
+    const legs = walking ? (step ? 'legsWalkA' : 'legsWalkB') : seated ? (back ? 'legsSitBack' : 'legsSit') : 'legsStand';
+    return { head, body: back ? 'bodyBack' : 'bodyFront', legs, lift: seated ? Math.max(0, place.seat - 4) : 0, bob: walking && step ? 1 : 0 };
+  }
+
+  function drawHero(now){
+    const p = heroPose(now);
+    const [fx, fy] = iso(state.pos.x, state.pos.y, state.pos.z || 0);
+    const sx = Math.round(fx), sy = Math.round(fy);
+    const cv = heroSprite(p.head, p.body, p.legs);
+    ctx.fillStyle = 'rgba(20,16,12,0.28)';            // a soft shadow grounds him
+    ctx.fillRect(sx - 5, sy - 1, 10, 2);
+    ctx.fillRect(sx - 3, sy + 1, 6, 1);
+    const x0 = sx - (cv.width >> 1), y0 = sy - p.lift - p.bob - (cv.height - 2);
+    if (state.flip){
+      ctx.save(); ctx.translate(x0 + cv.width, y0); ctx.scale(-1, 1); ctx.drawImage(cv, 0, 0); ctx.restore();
     } else {
-      block(x+2,y+28,8,8, PAL.pants,1);
-      block(x+14,y+28,8,8, PAL.pants,1);
+      ctx.drawImage(cv, x0, y0);
     }
-    // body
-    block(x+2,y+12+bob,20,16, PAL.shirt,2);
-    rect(x+3,y+13+bob,18,4, PAL.shirt2);
-    // arms
-    block(x-3,y+14+bob,5,12, PAL.skin,1);
-    block(x+22,y+14+bob,5,12, PAL.skin,1);
-    // head
-    blob(x+12, y+2+bob, 13, PAL.skin);
-    // hair cap
-    ctx.fillStyle = PAL.hair;
-    ctx.beginPath();
-    ctx.arc(x+12, y+2+bob, 13, Math.PI, Math.PI*2);
-    ctx.fill();
-    rect(x-1, y-4+bob, 5, 12, PAL.hair);
-    rect(x+20, y-4+bob, 5, 12, shade(PAL.hair,-0.15));
-    // blush
-    rect(x+4,y+6+bob,3,2, PAL.blush);
-    rect(x+17,y+6+bob,3,2, PAL.blush);
-    // eyes
-    // He blinks: one frame every ~5s, and every third time a quick double.
-    const bt = state.tick % 29;
-    if (bt === 0 || (bt === 2 && state.tick % 87 === 2)){
-      rect(x+7,y+5+bob,3,1, PAL.ink);
-      rect(x+16,y+5+bob,3,1, PAL.ink);
-    } else {
-      rect(x+7,y+3+bob,3,4, PAL.ink);
-      rect(x+16,y+3+bob,3,4, PAL.ink);
-    }
-    // mouth
-    rect(x+10,y+9+bob,4,2, PAL.mouth);
-
-    ctx.restore();
+    state.charBox = { x: x0 - 2, y: y0 - 2, w: cv.width + 4, h: cv.height + 4 };
+    state.heroScreen = [sx, y0];
   }
 
-  function drawWalker(t){
-    const progress = (t % 26) / 26; // 0..1 across transition window
-    const x = 12 + progress * (W-48);
-    const y = 156;
-    const frame = Math.floor(t/2)%2;
-    drawCharacter(x,y,frame,false,false);
+  // ---------- walking ----------
+  const WALK_SPEED = 3;                              // tiles a second
+  function startWalk(points, arriveAt){
+    state.path = points.map(p => ({ x: p.x, y: p.y, z: p.z || 0 }));
+    state.walking = true;
+    state.walkTo = arriveAt;
+    if (arriveAt) document.getElementById('locPill').textContent = 'WALKING…';
+  }
+
+  function faceToward(dx, dy, dz){
+    const sdx = (dx - dy) * (TW / 2), sdy = (dx + dy) * (TH / 2) - dz;
+    state.flip = sdx < -0.01;
+    if (Math.abs(sdx) > Math.abs(sdy) * 1.6) state.facing = 'side';
+    else state.facing = sdy < 0 ? 'back' : 'front';
+  }
+
+  function stepWalk(dt){
+    if (!state.walking) return;
+    let move = WALK_SPEED * dt / 1000;
+    const pos = state.pos;
+    while (move > 0 && state.path.length){
+      const tg = state.path[0];
+      const dx = tg.x - pos.x, dy = tg.y - pos.y, dz = tg.z - pos.z;
+      const dist = Math.hypot(dx, dy) || Math.abs(dz) / 8;
+      if (dist > 0.001) faceToward(dx, dy, dz);
+      if (dist <= move){
+        pos.x = tg.x; pos.y = tg.y; pos.z = tg.z;
+        state.path.shift();
+        move -= dist;
+      } else {
+        const f = move / dist;
+        pos.x += dx * f; pos.y += dy * f; pos.z += dz * f;
+        move = 0;
+      }
+    }
+    if (!state.path.length) arrive();
+  }
+
+  function arrive(){
+    state.walking = false;
+    state.flip = false;
+    const to = state.walkTo;
+    state.walkTo = null;
+    if (!to) return;
+    state.location = to;
+    updateStatusUI();
+    if (to === 'beach') fetchBoats();
+    showSpeech(pickSpeech());
+  }
+
+  // At the beach he doesn't stand still for long.
+  function maybeStroll(){
+    if (document.hidden || state.walking || state.location !== 'beach' || Math.random() < 0.4) return;
+    startWalk([atRow(22.8 + Math.random() * 2.6, 8 + Math.random() * 26, -BEACH_DROP)], null);
+  }
+
+  // ---------- speech bubble ----------
+  // Anchored above his head, wherever he is, and kept inside the frame.
+  const frameBox = canvas.parentElement;
+  const speechEl = document.getElementById('speech');
+  function placeSpeech(){
+    if (!speechEl.classList.contains('show') || !state.heroScreen) return;
+    const [hx, hy] = state.heroScreen;
+    const r = canvas.getBoundingClientRect(), fr = frameBox.getBoundingClientRect();
+    const px = hx / W * r.width + (r.left - fr.left);
+    const py = (hy - 3) / H * r.height + (r.top - fr.top);
+    const half = speechEl.offsetWidth / 2;
+    const cx = Math.max(half + 6, Math.min(fr.width - half - 6, px));
+    speechEl.style.left = cx + 'px';
+    speechEl.style.top = py + 'px';
+    speechEl.style.setProperty('--tail', Math.max(12, Math.min(2 * half - 12, half + px - cx)) + 'px');
   }
 
   // ---------- main render loop ----------
+  let lastFrame = performance.now();
   function render(){
-    const t = state.tick;
+    const now = performance.now();
+    const dt = Math.min(250, now - lastFrame);
+    lastFrame = now;
+    const t = now / 180;                              // animation clock, in the old 180ms ticks
     const w = mapWeather(state.weather.code);
     curSky = skyState();
-    const isDay = curSky.night < 0.5;
     lights.length = 0;
     state.charBox = null;
+    if (!staticLayer) buildStatic();
+    stepWalk(dt);
 
-    if (state.transitioning){
-      drawOutside(t, w, isDay);
-      drawWalker(t);
-      finishScene(t, w, true);
-    } else if (state.location === 'home'){
-      drawHome(t,w,isDay);
-      drawCharacter(96, 168, Math.floor(t/3)%2, false, false);
-      finishScene(t, w, false);
-    } else if (state.location === 'cafe'){
-      drawCafe(t,w,isDay);
-      drawCharacter(56, 156, 0, true, false);
-      finishScene(t, w, false);
-    } else if (state.location === 'work'){
-      drawWork(t,w,isDay);
-      drawCharacter(116, 152, 0, true, false);
-      finishScene(t, w, false);
-    } else if (state.location === 'bookstore'){
-      drawBookstore(t,w,isDay);
-      drawCharacter(148, 164, Math.floor(t/4)%2, false, false);
-      finishScene(t, w, false);
-    } else if (state.location === 'beach'){
-      drawBeach(t,w,isDay);
-      // standing legs end at y+44, so y=174 puts his feet on the dry sand
-      drawCharacter(120 + Math.sin(t/16)*46, 174, Math.floor(t/3)%2, false, false);
-      finishScene(t, w, true);
-    } else {
-      drawOutside(t,w,isDay);
-      // character is 27 wide drawn from x-3, so x=148 centres him on the 140..180 path
-      drawCharacter(148 + Math.sin(t/10)*6, 156, Math.floor(t/3)%2, false, false);
-      finishScene(t, w, true);
-    }
-
-    if (state.location !== 'beach') state.boatHits.length = 0;
+    curWeather = w;
+    skyGradient(0, 0, W, SKY_LINE + 2);
+    // An overcast sky is grey, not blue. Only the sky: the rooms stay as they are.
+    const overcast = { rainy: 0.45, snowy: 0.35, foggy: 0.4, cloudy: 0.15 }[w] || 0;
+    if (overcast) rect(0, 0, W, SKY_LINE + 2, 'rgba(150,160,170,' + overcast + ')');
+    drawSkyDetails(t, w, SKY_LINE);
+    drawWindowViews(t, w);
+    drawSea(t);
+    ctx.drawImage(staticLayer, 0, 0);
+    drawShips(t);
+    roomLife(t);
+    registerLamps();
+    drawHero(now);
+    const inRoom = roomAt(state.pos);
+    if (inRoom) ctx.drawImage(stubLayers[inRoom.id], 0, 0);   // the front wall is between him and you
+    finishScene(t, w);
+    placeSpeech();
     state.tick += 1;
   }
 
+
   // Draw only while someone can see him. Sitting in the tray all day, the
-  // window is hidden far more than it's shown, and it used to keep repainting
-  // ~5 frames a second regardless — measured at ~3% CPU hidden, the same as
-  // visible. The boat poll pauses too; the server keeps listening to AIS
-  // either way, so the vessel cache still learns while he's out of sight.
+  // window is hidden far more than it's shown. Faster frames while he's
+  // walking, so he moves smoothly; slower when he's settled. The boat poll
+  // pauses too; the server keeps listening to AIS either way.
   let renderTimer = null;
+  function frame(){
+    renderTimer = null;
+    if (document.hidden) return;
+    try { render(); } catch (e) { console.error('render failed', e); }
+    renderTimer = setTimeout(frame, state.walking ? 80 : 160);
+  }
   function syncRendering(){
     if (document.hidden){
-      clearInterval(renderTimer); renderTimer = null;
+      clearTimeout(renderTimer); renderTimer = null;
     } else if (!renderTimer){
-      if (state.location === 'beach') fetchBoats();   // come back to a current sea
-      render();
-      renderTimer = setInterval(render, 180);
+      fetchBoats();                                   // come back to a current sea
+      lastFrame = performance.now();
+      frame();
     }
   }
+  state.pos = { ...routeTo(state.location).at(-1) };
   document.addEventListener('visibilitychange', syncRendering);
   syncRendering();
-  fetchBoats();
   setInterval(() => { if (!document.hidden) fetchBoats(); }, 45000);
   fetchTide();
   setInterval(fetchTide, 30*60*1000);   // the forecast itself rarely changes
   setInterval(updateTide, 60*1000);     // but where we are within it does
   setInterval(()=> maybeRelocate(false), 45000);
   setInterval(fetchWeather, 30*60*1000);
+  setInterval(maybeStroll, 7000);
 
   document.getElementById('nudgeBtn').addEventListener('click', ()=>{
-    if (state.transitioning) return;
+    if (state.walking && state.walkTo) return;
     const pool = LOCATIONS.filter(l => l !== state.location);
     goTo(pool[Math.floor(Math.random()*pool.length)]);
   });
@@ -1938,7 +2109,7 @@
   }
 
   // ---------- hovering a ship ----------
-  // drawBeach records a hit box per boat each frame, in the canvas's own
+  // drawShips records a hit box per boat each frame, in the canvas's own
   // 320x240 space. The canvas is stretched to fit its container, so pointer
   // coordinates get scaled back into that space before testing.
   const boatTip = document.getElementById('boatTip');
@@ -2014,19 +2185,59 @@
     hoveredBoat = null;
   }
 
+  // ---------- places: hover to see what's what, click to send him ----------
+  const PLACE_NAMES = { home: 'Home', bookstore: 'The bookshop', cafe: 'The café', work: 'Work', outside: 'The promenade', beach: 'The beach' };
+
+  function canvasPoint(e){
+    const r = canvas.getBoundingClientRect();
+    return [(e.clientX - r.left) / r.width * W, (e.clientY - r.top) / r.height * H];
+  }
+
+  function placeAt(lx, ly){
+    for (const r of ROOMS) if (pointInPoly(lx, ly, r.silhouette)) return r.id;
+    if (ly >= SKY_LINE && ly < rowY(PROM_EDGE)) return 'outside';
+    if (ly >= rowY(PROM_EDGE) && ly < waterlineY()) return 'beach';
+    return null;
+  }
+
+  function showPlaceTip(place, lx, ly){
+    boatTip.textContent = '';
+    const name = document.createElement('span');
+    name.className = 'bt-name';
+    name.textContent = PLACE_NAMES[place];
+    const line = document.createElement('span');
+    line.className = 'bt-line';
+    line.textContent = (place === state.location && !state.walking) ? "He's here" : 'Click to send him here';
+    boatTip.append(name, line);
+    const r = canvas.getBoundingClientRect(), fr = frameEl.getBoundingClientRect();
+    boatTip.style.left = (lx / W * r.width + (r.left - fr.left)) + 'px';
+    boatTip.style.top  = ((ly - 8) / H * r.height + (r.top - fr.top)) + 'px';
+    boatTip.classList.add('show');
+  }
+
   canvas.addEventListener('mousemove', (e) => {
     const hit = boatAt(e.clientX, e.clientY);
-    if (!hit){ hideBoatTip(); return; }
+    if (hit){
+      canvas.classList.add('boat-hover');
+      hoveredBoat = hit.boat;            // repositioned every move, so it tracks a drifting boat
+      showBoatTip(hit);
+      return;
+    }
+    const [lx, ly] = canvasPoint(e);
+    const place = placeAt(lx, ly);
+    if (!place){ hideBoatTip(); return; }
     canvas.classList.add('boat-hover');
-    // Reposition every move so the card tracks a boat as it drifts.
-    hoveredBoat = hit.boat;
-    showBoatTip(hit);
+    showPlaceTip(place, lx, ly);
   });
   canvas.addEventListener('mouseleave', hideBoatTip);
-  // Touch: tap a boat to see it, tap elsewhere to dismiss.
+  // Click a ship for its details (tap on touch screens), or a place to send him there.
   canvas.addEventListener('click', (e) => {
     const hit = boatAt(e.clientX, e.clientY);
-    if (hit) showBoatTip(hit); else hideBoatTip();
+    if (hit){ showBoatTip(hit); return; }
+    const [lx, ly] = canvasPoint(e);
+    const place = placeAt(lx, ly);
+    hideBoatTip();
+    if (place && place !== state.location) goTo(place);
   });
 
   document.getElementById('sendBtn').addEventListener('click', sendChat);

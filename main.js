@@ -19,10 +19,11 @@ let alwaysOnTop = false;
 
 function createWindow(){
   win = new BrowserWindow({
-    width: 620,
-    height: 800,
-    minWidth: 420,
-    minHeight: 600,
+    // Wide enough for the whole town at a crisp 1.5x (see .app in the page).
+    width: 800,
+    height: 900,
+    minWidth: 520,
+    minHeight: 640,
     title: 'Pixel Companion',
     alwaysOnTop,
     webPreferences: {
