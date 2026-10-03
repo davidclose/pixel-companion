@@ -49,6 +49,11 @@ node companion-server.js
 Then open **http://localhost:8934/** in your browser. Leave the terminal
 running while you use the app.
 
+**On the web (any browser, no install):**
+https://pixel-companion.vercel.app — the Vercel project `pixel-companion`
+(team DRC) is linked to the GitHub repo, so **every push to `main`
+redeploys it**. See "On the web" below for what differs from the desktop app.
+
 **Offline only (no setup):**
 Just double-click `pixel-companion.html`. Everything works — scenes,
 weather, behavior — except chat replies are canned/keyword-matched instead
@@ -470,6 +475,42 @@ Implementation notes:
 - Degrades quietly, exactly like chat: no key or no network means `ok:false`
   and the scene falls back to invented boats.
 
+### On the web (Vercel)
+
+The same page, hosted. What the browser does itself works unchanged: weather,
+tide, sunrise and sunset, the moon, the whole scene. The two things the local
+server provides need a different answer on a host that only runs short
+functions:
+
+- **Ships.** The desktop server holds one connection to aisstream open all
+  day. A serverless function can't, so `api/boats.js` opens the stream, listens
+  for 15 seconds, and returns whichever ships reported in that window, marked
+  `partial`. **The page builds the picture up itself** (`mergeFleet()`): it
+  keeps every ship it's been told about until that ship has been quiet for 30
+  minutes, saves that in `localStorage` so a reload doesn't start empty, and
+  asks again 10 seconds after each answer while the tab is visible. That means
+  the feed is being heard about 60% of the time; an anchored ship, which only
+  reports every 3 minutes, turns up within a few. In a test against the real
+  feed it had 9 ships after two minutes. The function reuses `boat-source.js`
+  for all the parsing (`ingest`, `seed`), and `vessel-seed.json` is a snapshot
+  of the identities this Mac has learned, since the host has no disk cache to
+  learn types into. Responses are cached for 10 seconds at the edge so several
+  viewers share one listen.
+- **The aisstream key** must be set as `AISSTREAM_API_KEY` in the Vercel
+  project's environment variables. It stays on the server. Without it the
+  function says so and the page shows the labelled example boats.
+- **Chat.** Real replies run through Claude Code on your Mac, which a website
+  can't reach, and the alternative is a paid API key. So on the web he uses
+  his simple built-in replies: a missing `/chat` (404) is recognised as "this
+  is the website", explained once in the chat log, and not retried.
+
+`vercel.json` points `/` at the page and `/boats` at the function.
+`.vercelignore` keeps the desktop app's files out of the deployment, including
+`package.json`, which would otherwise make Vercel install Electron for nothing.
+
+Deployment Protection (Vercel Authentication) decides who can open the
+`*.vercel.app` address: with it on, a browser has to be logged in to Vercel.
+
 ## Known gotchas
 
 - **The server only listens on loopback (`127.0.0.1`) and checks the Host
@@ -579,8 +620,11 @@ Implementation notes:
 - `pixel-companion.html` — the app itself.
 - `companion-server.js` — optional local chat bridge + static server (used
   standalone via terminal, or embedded by `main.js`). Also serves `/boats`.
-- `boat-source.js` — live AIS vessel feed for the beach scene. Run directly
+- `boat-source.js` — live AIS vessel feed. Run directly
   (`node boat-source.js 60`) to test your key.
+- `api/boats.js`, `vercel.json`, `.vercelignore`, `vessel-seed.json` — the
+  website: the ship function, routing, what not to deploy, and a snapshot of
+  known vessel identities.
 - `ais-config.example.json` — template for the aisstream key. The real
   `ais-config.json` is gitignored.
 - `main.js` / `package.json` / `tray-icon.png` — the Electron desktop-app

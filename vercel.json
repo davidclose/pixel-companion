@@ -1,0 +1,18 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    {
+      "source": "/",
+      "destination": "/pixel-companion.html"
+    },
+    {
+      "source": "/boats",
+      "destination": "/api/boats"
+    }
+  ],
+  "functions": {
+    "api/boats.js": {
+      "maxDuration": 20
+    }
+  }
+}

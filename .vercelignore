@@ -1,0 +1,16 @@
+# The website needs the page, the ship function and what it requires.
+# Everything else here is the desktop app, and package.json would make
+# Vercel install Electron for nothing.
+dist
+build
+node_modules
+stick-pet
+.claude
+main.js
+companion-server.js
+tray-icon.png
+package.json
+package-lock.json
+PROJECT_NOTES.md
+ais-config.example.json
+ais-config.json

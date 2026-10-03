@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Pixel Companion — Whitley Bay</title>
 <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <style>
@@ -665,11 +666,53 @@
     state.boatsAt = Date.now();
   }
 
+  // On the web there's no server holding the ship feed open: each /boats
+  // request only hears the ships that reported during its few seconds, and
+  // says so (`partial`). So the page keeps its own record of every ship it's
+  // been told about, until that ship has been quiet for 30 minutes, and
+  // remembers it across reloads. The desktop app's server sends the whole
+  // picture each time, so none of this applies there.
+  const FLEET_KEY = 'pixel-companion-fleet-v1', FLEET_STALE_MS = 30 * 60 * 1000;
+  const fleet = new Map();
+  try { for (const [k, v] of JSON.parse(localStorage.getItem(FLEET_KEY) || '[]')) fleet.set(k, v); } catch { /* no storage, or nothing saved */ }
+
+  function mergeFleet(list){
+    const now = Date.now();
+    for (const b of list) if (b && b.mmsi) fleet.set(b.mmsi, { b, at: now - (b.ageSec || 0) * 1000 });
+    for (const [k, v] of fleet) if (now - v.at > FLEET_STALE_MS) fleet.delete(k);
+    try { localStorage.setItem(FLEET_KEY, JSON.stringify([...fleet])); } catch { /* private window: just don't persist */ }
+    if (fleet.size){
+      state.boats = [...fleet.values()].map(v => v.b);
+      state.boatsLive = true;
+      state.boatsAt = now;
+    } else if (!state.boatsLive){
+      useExampleBoats();
+    }
+  }
+
+  // Each hosted request listens for about 15 seconds, so asking again 10
+  // seconds after every answer means the feed is being heard most of the
+  // time; an anchored ship, which only reports every 3 minutes, is found
+  // within a few. Stops while the tab is hidden, like everything else.
+  let hostedFeed = false, boatsInFlight = false, hostedTimer = null;
+  function pollHostedSoon(){
+    clearTimeout(hostedTimer);
+    hostedTimer = setTimeout(() => { if (!document.hidden) fetchBoats(); }, 10000);
+  }
+
   async function fetchBoats(){
+    if (boatsInFlight) return;
+    boatsInFlight = true;
     try {
       const res = await fetch('/boats', { cache: 'no-store' });
       if (!res.ok) throw new Error('bad status');
       const data = await res.json();
+      if (data && data.partial){
+        hostedFeed = true;
+        mergeFleet(Array.isArray(data.boats) ? data.boats : []);
+        pollHostedSoon();
+        return;
+      }
       if (data && data.ok && Array.isArray(data.boats) && data.boats.length){
         state.boats = data.boats;
         state.boatsLive = true;
@@ -678,7 +721,9 @@
       }
       useExampleBoats();
     } catch {
-      useExampleBoats();
+      if (hostedFeed) pollHostedSoon(); else useExampleBoats();
+    } finally {
+      boatsInFlight = false;
     }
   }
 
@@ -2203,7 +2248,7 @@
   state.pos = { ...routeTo(state.location).at(-1) };
   document.addEventListener('visibilitychange', syncRendering);
   syncRendering();
-  setInterval(() => { if (!document.hidden) fetchBoats(); }, 45000);
+  setInterval(() => { if (!document.hidden && !hostedFeed) fetchBoats(); }, 45000);   // the hosted feed paces itself
   fetchTide();
   setInterval(fetchTide, 30*60*1000);   // the forecast itself rarely changes
   setInterval(updateTide, 60*1000);     // but where we are within it does
@@ -2306,7 +2351,8 @@
       if (!res.ok){
         const body = await res.json().catch(()=>({}));
         const e = new Error(body?.error || `HTTP ${res.status}`);
-        e.reason = body?.reason || 'other';
+        // 404/405: nothing answers /chat here at all, which is the website.
+        e.reason = (res.status === 404 || res.status === 405) ? 'hosted' : (body?.reason || 'other');
         throw e;
       }
       const data = await res.json();
@@ -2323,6 +2369,7 @@
     timeout: 'Claude took too long with that one — offline reply instead.',
     offline: 'No chat bridge running — offline replies. (Open him via the app, or run `node companion-server.js`, for real replies.)',
     other: 'The chat bridge hit a snag — offline replies for a minute.',
+    hosted: "This is the web version, so he's on his simple replies. Real conversation runs through Claude Code on your Mac, in the desktop app.",
   };
 
   async function sendChat(){
@@ -2354,7 +2401,7 @@
         const reason = e.reason || (e.name === 'AbortError' ? 'timeout' : 'offline');
         if (reason !== state.bridgeProblem) appendChatLine('system', BRIDGE_PROBLEMS[reason] || BRIDGE_PROBLEMS.other);
         state.bridgeProblem = reason;
-        state.bridgeRetryAt = Date.now() + (reason === 'offline' ? 5*60*1000 : 60*1000);
+        state.bridgeRetryAt = reason === 'hosted' ? Infinity : Date.now() + (reason === 'offline' ? 5*60*1000 : 60*1000);
       }
     }
 

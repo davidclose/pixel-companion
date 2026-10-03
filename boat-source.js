@@ -373,7 +373,16 @@ function getBoats(limit = 12){
   };
 }
 
-module.exports = { start, getBoats, HOME_LAT, HOME_LON, BOUNDING_BOX, categorise, distanceKm, bearingDeg };
+// Preload vessel identities (name, type, length by MMSI). The hosted version
+// has no disk cache to learn into, so it starts from a snapshot instead.
+function seed(entries){
+  for (const [mmsi, v] of Object.entries(entries || {})) {
+    if (v && typeof v === 'object' && !statics.has(String(mmsi))) statics.set(String(mmsi), v);
+  }
+}
+
+module.exports = { start, getBoats, HOME_LAT, HOME_LON, BOUNDING_BOX, categorise, distanceKm, bearingDeg,
+  ingest: handleMessage, frameToText, seed, loadApiKey, STREAM_URL };
 
 // ---------------------------------------------------------------------------
 // Direct run: connect, listen for a bit, print what's out there.
