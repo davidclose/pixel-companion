@@ -499,6 +499,15 @@ functions:
 - **The aisstream key** must be set as `AISSTREAM_API_KEY` in the Vercel
   project's environment variables. It stays on the server. Without it the
   function says so and the page shows the labelled example boats.
+- **Passcode (optional).** Set `SITE_PASSCODE` in the Vercel project and the
+  ship feed is closed to anyone without it, the same scheme as the North Shore
+  dashboard: the page asks once, the browser remembers it, and it's sent as an
+  `x-passcode` header. The comparison is on hashes in constant time, a wrong
+  guess is delayed a second, and gated answers are marked `no-store` so the
+  CDN can never hand them to someone else. With no `SITE_PASSCODE` the feed is
+  open. Either way the scene itself is public and falls back to the labelled
+  example boats. `vercel.json` also sends `X-Robots-Tag: noindex`, so search
+  engines don't list the site.
 - **Chat.** Real replies run through Claude Code on your Mac, which a website
   can't reach, and the alternative is a paid API key. So on the web he uses
   his simple built-in replies: a missing `/chat` (404) is recognised as "this

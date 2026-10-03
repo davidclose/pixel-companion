@@ -9,9 +9,24 @@
 //
 // Needs AISSTREAM_API_KEY set in the Vercel project's environment variables.
 // The key never reaches the browser.
+//
+// Set SITE_PASSCODE there too and the feed is closed to anyone without it
+// (sent as an `x-passcode` header, the same scheme as the North Shore
+// dashboard). Without SITE_PASSCODE the feed is open, as it was.
 
+const crypto = require('crypto');
 const boats = require('../boat-source.js');
 boats.seed(require('../vessel-seed.json'));
+
+const WRONG_PASSCODE_DELAY_MS = 1000;   // slows down guessing
+
+// Compared as hashes in constant time, so the response time says nothing
+// about how close a guess was.
+function passcodeOk(given){
+  const a = crypto.createHash('sha256').update(String(given || '')).digest();
+  const b = crypto.createHash('sha256').update(process.env.SITE_PASSCODE || '').digest();
+  return crypto.timingSafeEqual(a, b);
+}
 
 const LISTEN_MS = 15000;   // long enough to catch a fair share of reports; the page asks again soon after
 
@@ -51,6 +66,13 @@ function listen(apiKey){
 }
 
 module.exports = async (req, res) => {
+  const gated = Boolean(process.env.SITE_PASSCODE);
+  if (gated && !passcodeOk(req.headers['x-passcode'])) {
+    await new Promise((r) => setTimeout(r, WRONG_PASSCODE_DELAY_MS));
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(401).json({ error: 'passcode' });
+    return;
+  }
   const apiKey = boats.loadApiKey();
   if (!apiKey) {
     res.status(200).json({ ok: false, partial: true, connected: false, error: 'No aisstream API key configured.', boats: [] });
@@ -58,9 +80,10 @@ module.exports = async (req, res) => {
   }
   const heard = await listen(apiKey);
   const snap = boats.getBoats(40);
-  // Shared between visitors for a few seconds, so several people watching
-  // don't each open their own connection to the ship feed.
-  res.setHeader('Cache-Control', 'public, s-maxage=10');
+  // Open feed: shared between visitors for a few seconds, so several people
+  // watching don't each open their own connection. Behind a passcode it must
+  // never be cached by the CDN, or the cache would hand it to anyone.
+  res.setHeader('Cache-Control', gated ? 'private, no-store' : 'public, s-maxage=10');
   res.status(200).json({ ok: snap.boats.length > 0, partial: true, connected: heard.frames > 0,
     error: heard.error, frames: heard.frames, boats: snap.boats });
 };

@@ -180,6 +180,12 @@
   .chatline.you .who{ color: var(--slate); }
   .chatline.him .who{ color: var(--amber); }
   .chatline.system{ color: var(--muted); font-style: italic; }
+  .passrow{ display:flex; gap:10px; align-items:center; margin-top:10px; font-size:11px; color: var(--muted); }
+  .passrow[hidden]{ display:none; }
+  .passrow input{
+    flex:1; font-family:'Space Mono', monospace; font-size:12px; background: var(--edge); color: var(--cream);
+    border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; padding: 7px 10px;
+  }
   .chatrow{ display:flex; gap:8px; margin-top:10px; }
   .chatrow input[type="text"]{
     flex:1;
@@ -214,6 +220,11 @@
       </div>
     </div>
     <div class="loc-pill" id="locPill">HOME</div>
+  </div>
+
+  <div class="passrow" id="passRow" hidden>
+    <span id="passMsg">Live ships need the passcode.</span>
+    <input type="password" id="passInput" placeholder="Passcode (press Enter)" autocomplete="off">
   </div>
 
   <div class="chatlog" id="chatLog"></div>
@@ -695,6 +706,20 @@
   // time; an anchored ship, which only reports every 3 minutes, is found
   // within a few. Stops while the tab is hidden, like everything else.
   let hostedFeed = false, boatsInFlight = false, hostedTimer = null;
+
+  // The hosted feed can be put behind a passcode. If it is, the page asks
+  // once and this browser remembers it; the scene carries on with the
+  // labelled example boats until then.
+  const PASS_KEY = 'pixel-companion-passcode';
+  let passcode = null;
+  try { passcode = localStorage.getItem(PASS_KEY); } catch { /* no storage */ }
+  function askForPasscode(wasWrong){
+    hostedFeed = true;                             // it's the website; don't fall back to the 45s poll
+    if (wasWrong){ passcode = null; try { localStorage.removeItem(PASS_KEY); } catch { /* ignore */ } }
+    document.getElementById('passMsg').textContent = wasWrong ? "That passcode didn't work. Try again." : 'Live ships need the passcode.';
+    document.getElementById('passRow').hidden = false;
+    if (!state.boatsLive) useExampleBoats();
+  }
   function pollHostedSoon(){
     clearTimeout(hostedTimer);
     hostedTimer = setTimeout(() => { if (!document.hidden) fetchBoats(); }, 10000);
@@ -704,11 +729,13 @@
     if (boatsInFlight) return;
     boatsInFlight = true;
     try {
-      const res = await fetch('/boats', { cache: 'no-store' });
+      const res = await fetch('/boats', { cache: 'no-store', headers: passcode ? { 'x-passcode': passcode } : {} });
+      if (res.status === 401){ askForPasscode(Boolean(passcode)); return; }
       if (!res.ok) throw new Error('bad status');
       const data = await res.json();
       if (data && data.partial){
         hostedFeed = true;
+        document.getElementById('passRow').hidden = true;
         mergeFleet(Array.isArray(data.boats) ? data.boats : []);
         pollHostedSoon();
         return;
@@ -2576,6 +2603,14 @@
     if (place && place !== state.location) goTo(place);
   });
 
+  document.getElementById('passInput').addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || !e.target.value.trim()) return;
+    passcode = e.target.value.trim();
+    e.target.value = '';
+    try { localStorage.setItem(PASS_KEY, passcode); } catch { /* remembered for this visit only */ }
+    document.getElementById('passMsg').textContent = 'Checking…';
+    fetchBoats();
+  });
   document.getElementById('chatInput').addEventListener('keydown', (e)=>{
     if (e.key === 'Enter') sendChat();
   });
